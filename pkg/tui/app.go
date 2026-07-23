@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -291,7 +292,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, func() tea.Msg { return strings.Join(lines, "\n") }
 			}
 
-			if cmdLower == "/targets" {
+			if cmdLower == "/targets" || cmdLower == "/hosts" || cmdLower == "/systems" {
 				if len(m.cfg.Targets) == 0 {
 					return m, func() tea.Msg { return "No target systems configured in config.yaml." }
 				}
@@ -347,15 +348,26 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 
-			// Add target command handling
-			if strings.HasPrefix(cmdLower, "add target ") || strings.HasPrefix(cmdLower, "/addtarget ") || strings.HasPrefix(cmdLower, "/add-target ") {
+			// Add target / host command handling
+			isAddCmd := false
+			prefixes := []string{
+				"add target ", "add host ", "add system ",
+				"/addtarget ", "/addhost ", "/add-target ", "/add-host ",
+			}
+			for _, p := range prefixes {
+				if strings.HasPrefix(cmdLower, p) {
+					isAddCmd = true
+					break
+				}
+			}
+
+			if isAddCmd {
 				raw := input
-				if idx := strings.Index(strings.ToLower(raw), "target "); idx != -1 {
-					raw = raw[idx+7:]
-				} else if idx := strings.Index(strings.ToLower(raw), "addtarget "); idx != -1 {
-					raw = raw[idx+10:]
-				} else if idx := strings.Index(strings.ToLower(raw), "add-target "); idx != -1 {
-					raw = raw[idx+11:]
+				for _, p := range prefixes {
+					if idx := strings.Index(strings.ToLower(raw), p); idx != -1 {
+						raw = raw[idx+len(p):]
+						break
+					}
 				}
 
 				var name, host, user string
@@ -383,9 +395,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 
+				if host == "" && name != "" {
+					host = name
+				}
+
 				if name == "" || host == "" {
 					return m, func() tea.Msg {
-						return "⚠️ Usage: `add target <name> | <host> | <user>` (e.g., `add target pxe-server | 192.168.100.200 | root`)"
+						return "⚠️ Usage: `add host <ip_or_name>` or `add target <name> | <host> | <user>` (e.g. `add host 192.168.4.61`)"
 					}
 				}
 
@@ -395,8 +411,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 				// Check for duplicate target names
 				for _, t := range m.cfg.Targets {
-					if t.Name == name {
-						return m, func() tea.Msg { return fmt.Sprintf("❌ Target '%s' is already registered.", name) }
+					if t.Name == name || (t.Host != "" && t.Host == host) {
+						return m, func() tea.Msg { return fmt.Sprintf("❌ Target or host '%s' (%s) is already registered in config.yaml.", name, host) }
 					}
 				}
 
@@ -416,13 +432,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 
 					m.cfg.Targets = append(m.cfg.Targets, newTarget)
-					home, _ := filepath.Abs(".")
-					if h, err := filepath.Abs("~"); err == nil {
-						home = h
-					}
-					userHome, _ := filepath.Abs("/home/fcurrie")
-					if userHome != "" {
-						home = userHome
+					home, _ := os.UserHomeDir()
+					if home == "" {
+						home = "/home/fcurrie"
 					}
 					cfgPath := filepath.Join(home, ".config", "microharness", "config.yaml")
 					if err := m.cfg.Save(cfgPath); err != nil {
