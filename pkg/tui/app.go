@@ -271,7 +271,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						if d.PasswordlessSSH {
 							sshStatus = fmt.Sprintf("🔑 Passwordless SSH: READY (User: %s | Hostname: %s)", d.User, d.Hostname)
 						}
-						lines = append(lines, fmt.Sprintf("  • IP: %s │ %s", d.IP, sshStatus))
+						lines = append(lines, fmt.Sprintf("  • IP: %s [%s] │ %s", d.IP, d.Interface, sshStatus))
 					}
 					lines = append(lines, "\n👉 To register a target, type: `add target <name> | <host> | <user>`")
 					return strings.Join(lines, "\n")
