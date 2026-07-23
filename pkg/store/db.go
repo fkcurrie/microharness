@@ -22,8 +22,16 @@ type JobLog struct {
 	ExecutedAt time.Time `json:"executed_at"`
 }
 
+type ChatSession struct {
+	SessionID    string    `json:"session_id"`
+	LastMessage  string    `json:"last_message"`
+	MessageCount int       `json:"message_count"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}
+
 type ChatMessage struct {
 	ID        int64     `json:"id"`
+	SessionID string    `json:"session_id"`
 	Role      string    `json:"role"` // "user", "assistant", "system"
 	Content   string    `json:"content"`
 	CreatedAt time.Time `json:"created_at"`
@@ -61,13 +69,19 @@ func (s *Store) initSchema() error {
 
 	CREATE TABLE IF NOT EXISTS chat_messages (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		session_id TEXT NOT NULL DEFAULT 's-legacy',
 		role TEXT NOT NULL,
 		content TEXT NOT NULL,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);
 	`
-	_, err := s.db.Exec(schema)
-	return err
+	if _, err := s.db.Exec(schema); err != nil {
+		return err
+	}
+
+	// Ensure session_id column exists for upgraded databases
+	_, _ = s.db.Exec("ALTER TABLE chat_messages ADD COLUMN session_id TEXT NOT NULL DEFAULT 's-legacy';")
+	return nil
 }
 
 func (s *Store) LogJob(jobName, target, status, output string) error {
@@ -75,8 +89,11 @@ func (s *Store) LogJob(jobName, target, status, output string) error {
 	return err
 }
 
-func (s *Store) SaveMessage(role, content string) error {
-	_, err := s.db.Exec("INSERT INTO chat_messages (role, content) VALUES (?, ?)", role, content)
+func (s *Store) SaveMessage(sessionID, role, content string) error {
+	if sessionID == "" {
+		sessionID = "s-default"
+	}
+	_, err := s.db.Exec("INSERT INTO chat_messages (session_id, role, content) VALUES (?, ?, ?)", sessionID, role, content)
 	return err
 }
 
@@ -98,8 +115,43 @@ func (s *Store) GetRecentJobLogs(limit int) ([]JobLog, error) {
 	return logs, nil
 }
 
-func (s *Store) GetRecentMessages(limit int) ([]ChatMessage, error) {
-	rows, err := s.db.Query("SELECT id, role, content, created_at FROM chat_messages ORDER BY id DESC LIMIT ?", limit)
+func (s *Store) GetRecentSessions(limit int) ([]ChatSession, error) {
+	query := `
+	SELECT session_id,
+	       COALESCE(content, ''),
+	       COUNT(id) as msg_count,
+	       MAX(created_at) as updated_at
+	FROM chat_messages
+	GROUP BY session_id
+	ORDER BY updated_at DESC
+	LIMIT ?
+	`
+	rows, err := s.db.Query(query, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var sessions []ChatSession
+	for rows.Next() {
+		var cs ChatSession
+		if err := rows.Scan(&cs.SessionID, &cs.LastMessage, &cs.MessageCount, &cs.UpdatedAt); err != nil {
+			return nil, err
+		}
+		sessions = append(sessions, cs)
+	}
+	return sessions, nil
+}
+
+func (s *Store) GetMessagesBySession(sessionID string, limit int) ([]ChatMessage, error) {
+	query := `
+	SELECT id, session_id, role, content, created_at
+	FROM chat_messages
+	WHERE session_id = ?
+	ORDER BY id ASC
+	LIMIT ?
+	`
+	rows, err := s.db.Query(query, sessionID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -108,13 +160,30 @@ func (s *Store) GetRecentMessages(limit int) ([]ChatMessage, error) {
 	var msgs []ChatMessage
 	for rows.Next() {
 		var m ChatMessage
-		if err := rows.Scan(&m.ID, &m.Role, &m.Content, &m.CreatedAt); err != nil {
+		if err := rows.Scan(&m.ID, &m.SessionID, &m.Role, &m.Content, &m.CreatedAt); err != nil {
+			return nil, err
+		}
+		msgs = append(msgs, m)
+	}
+	return msgs, nil
+}
+
+func (s *Store) GetRecentMessages(limit int) ([]ChatMessage, error) {
+	rows, err := s.db.Query("SELECT id, session_id, role, content, created_at FROM chat_messages ORDER BY id DESC LIMIT ?", limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var msgs []ChatMessage
+	for rows.Next() {
+		var m ChatMessage
+		if err := rows.Scan(&m.ID, &m.SessionID, &m.Role, &m.Content, &m.CreatedAt); err != nil {
 			return nil, err
 		}
 		msgs = append(msgs, m)
 	}
 
-	// Reverse to return in chronological order
 	for i, j := 0, len(msgs)-1; i < j; i, j = i+1, j-1 {
 		msgs[i], msgs[j] = msgs[j], msgs[i]
 	}

@@ -48,21 +48,25 @@ func tickStatusCmd(text string, step int, delay time.Duration) tea.Cmd {
 }
 
 type model struct {
-	cfg        *config.Config
-	llmClient  llm.Client
-	skillMgr   *skills.Manager
-	dbStore    *store.Store
-	viewport   viewport.Model
-	textarea   textarea.Model
-	err        error
-	history    []llm.Message
-	sysStats   *sysinfo.SystemStats
-	recentLogs []store.JobLog
-	llmStats   LLMStats
-	statusMsg  string
-	width      int
-	height     int
-	loading    bool
+	cfg             *config.Config
+	llmClient       llm.Client
+	skillMgr        *skills.Manager
+	dbStore         *store.Store
+	viewport        viewport.Model
+	textarea        textarea.Model
+	err             error
+	history         []llm.Message
+	sysStats        *sysinfo.SystemStats
+	recentLogs      []store.JobLog
+	llmStats        LLMStats
+	statusMsg       string
+	sessionID       string
+	sessions        []store.ChatSession
+	selectingSess   bool
+	selectedSessIdx int
+	width           int
+	height          int
+	loading         bool
 }
 
 func NewModel(cfg *config.Config, llmClient llm.Client, skillMgr *skills.Manager, dbStore *store.Store) model {
@@ -79,30 +83,31 @@ func NewModel(cfg *config.Config, llmClient llm.Client, skillMgr *skills.Manager
 
 	stats, _ := sysinfo.GetStats()
 	var logs []store.JobLog
-	var initialHistory []llm.Message
+	var recentSessions []store.ChatSession
+	selectingSess := false
+	defaultSessID := fmt.Sprintf("s-%s", time.Now().Format("20060102-150405"))
 
 	if dbStore != nil {
 		logs, _ = dbStore.GetRecentJobLogs(5)
-		if chatMsgs, err := dbStore.GetRecentMessages(50); err == nil {
-			for _, cm := range chatMsgs {
-				initialHistory = append(initialHistory, llm.Message{
-					Role:    cm.Role,
-					Content: cm.Content,
-				})
-			}
+		if sessList, err := dbStore.GetRecentSessions(8); err == nil && len(sessList) > 0 {
+			recentSessions = sessList
+			selectingSess = true
 		}
 	}
 
 	m := model{
-		cfg:        cfg,
-		llmClient:  llmClient,
-		skillMgr:   skillMgr,
-		dbStore:    dbStore,
-		textarea:   ta,
-		viewport:   vp,
-		history:    initialHistory,
-		sysStats:   stats,
-		recentLogs: logs,
+		cfg:             cfg,
+		llmClient:       llmClient,
+		skillMgr:        skillMgr,
+		dbStore:         dbStore,
+		textarea:        ta,
+		viewport:        vp,
+		sysStats:        stats,
+		recentLogs:      logs,
+		sessionID:       defaultSessID,
+		sessions:        recentSessions,
+		selectingSess:   selectingSess,
+		selectedSessIdx: 0,
 	}
 	m.renderViewport()
 	return m
@@ -113,6 +118,51 @@ func (m model) Init() tea.Cmd {
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if m.selectingSess {
+		switch msg := msg.(type) {
+		case tea.KeyMsg:
+			switch msg.Type {
+			case tea.KeyCtrlC, tea.KeyEsc:
+				return m, tea.Quit
+			case tea.KeyUp, tea.KeyCtrlP:
+				if m.selectedSessIdx > 0 {
+					m.selectedSessIdx--
+				}
+			case tea.KeyDown, tea.KeyCtrlN:
+				if m.selectedSessIdx < len(m.sessions) {
+					m.selectedSessIdx++
+				}
+			case tea.KeyEnter:
+				if m.selectedSessIdx == 0 {
+					// Start New Session
+					m.sessionID = fmt.Sprintf("s-%s", time.Now().Format("20060102-150405"))
+					m.history = nil
+				} else {
+					// Resume Selected Session
+					selectedSess := m.sessions[m.selectedSessIdx-1]
+					m.sessionID = selectedSess.SessionID
+					m.history = nil
+					if m.dbStore != nil {
+						if chatMsgs, err := m.dbStore.GetMessagesBySession(m.sessionID, 50); err == nil {
+							for _, cm := range chatMsgs {
+								m.history = append(m.history, llm.Message{
+									Role:    cm.Role,
+									Content: cm.Content,
+								})
+							}
+						}
+					}
+				}
+				m.selectingSess = false
+				m.renderViewport()
+				return m, nil
+			}
+		case tea.WindowSizeMsg:
+			m.width = msg.Width
+			m.height = msg.Height
+		}
+		return m, nil
+	}
 	var (
 		tiCmd tea.Cmd
 		vpCmd tea.Cmd
@@ -156,7 +206,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.textarea.Reset()
 
 			if m.dbStore != nil {
-				_ = m.dbStore.SaveMessage("user", input)
+				_ = m.dbStore.SaveMessage(m.sessionID, "user", input)
 			}
 
 			// Check for direct skill invocation or creation
@@ -299,7 +349,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.renderViewport()
 
 		if m.dbStore != nil {
-			_ = m.dbStore.SaveMessage("assistant", msg.content)
+			_ = m.dbStore.SaveMessage(m.sessionID, "assistant", msg.content)
 		}
 
 	case string:
@@ -309,7 +359,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.renderViewport()
 
 		if m.dbStore != nil {
-			_ = m.dbStore.SaveMessage("assistant", msg)
+			_ = m.dbStore.SaveMessage(m.sessionID, "assistant", msg)
 		}
 
 	case errMsg:
@@ -321,6 +371,55 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) View() string {
+	if m.selectingSess {
+		var sb strings.Builder
+		sb.WriteString("───────────────────────────────────────────────────────────────\n")
+		sb.WriteString("       🚀 MicroHarness Command Center — Chat Session Selection  \n")
+		sb.WriteString("───────────────────────────────────────────────────────────────\n\n")
+
+		if m.selectedSessIdx == 0 {
+			sb.WriteString("  \x1b[1;32m> ✨ [Start New Chat Session]\x1b[0m\n\n")
+		} else {
+			sb.WriteString("    ✨ [Start New Chat Session]\n\n")
+		}
+
+		for i, sess := range m.sessions {
+			preview := truncateResp(sess.LastMessage, 35)
+			if preview == "" {
+				preview = "Empty chat session"
+			}
+			timeStr := sess.UpdatedAt.Format("Jan 02 15:04")
+			if i+1 == m.selectedSessIdx {
+				sb.WriteString(fmt.Sprintf("  \x1b[1;36m> 📂 Resume Session [%s] (%d msgs) — %s — %q\x1b[0m\n", sess.SessionID, sess.MessageCount, timeStr, preview))
+			} else {
+				sb.WriteString(fmt.Sprintf("    📂 Resume Session [%s] (%d msgs) — %s — %q\n", sess.SessionID, sess.MessageCount, timeStr, preview))
+			}
+		}
+
+		sb.WriteString("\n───────────────────────────────────────────────────────────────\n")
+		sb.WriteString("\x1b[90m[↑/↓] Navigate  │  [Enter] Select Session  │  [Esc] Quit\x1b[0m\n")
+
+		modalStyle := lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("#5A56E0")).
+			Padding(1, 2)
+
+		w := m.width
+		h := m.height
+		if w <= 0 {
+			w = 80
+		}
+		if h <= 0 {
+			h = 24
+		}
+
+		return lipgloss.Place(
+			w, h,
+			lipgloss.Center, lipgloss.Center,
+			modalStyle.Render(sb.String()),
+		)
+	}
+
 	// Styles
 	headerStyle := lipgloss.NewStyle().
 		Bold(true).
@@ -339,13 +438,13 @@ func (m model) View() string {
 		Foreground(lipgloss.Color("#7D56F4"))
 
 	// Header
-	header := headerStyle.Render(fmt.Sprintf(" MicroHarness v0.1.0 │ Host: %s │ Provider: %s ",
-		m.sysStats.Hostname, m.cfg.LLM.DefaultProvider))
+	header := headerStyle.Render(fmt.Sprintf(" MicroHarness v0.1.0 │ Session: %s │ Host: %s │ Provider: %s ",
+		m.sessionID, m.sysStats.Hostname, m.cfg.LLM.DefaultProvider))
 
 	// Left Pane (Chat Viewport & Textarea)
 	chatView := lipgloss.JoinVertical(
 		lipgloss.Left,
-		titleStyle.Render("── Agent Chat Session ──"),
+		titleStyle.Render(fmt.Sprintf("── Agent Chat Session [%s] ──", m.sessionID)),
 		m.viewport.View(),
 		m.textarea.View(),
 	)
@@ -438,4 +537,13 @@ func (m *model) renderViewport() {
 
 	m.viewport.SetContent(sb.String())
 	m.viewport.GotoBottom()
+}
+
+func truncateResp(s string, max int) string {
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.TrimSpace(s)
+	if len(s) > max {
+		return s[:max] + "..."
+	}
+	return s
 }
