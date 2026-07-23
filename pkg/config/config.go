@@ -21,10 +21,11 @@ type ServerConfig struct {
 }
 
 type LLMConfig struct {
-	DefaultProvider string       `yaml:"default_provider"` // "gemini", "claude", "ollama"
-	Gemini          GeminiConfig `yaml:"gemini"`
-	Claude          ClaudeConfig `yaml:"claude"`
-	Ollama          OllamaConfig `yaml:"ollama"`
+	DefaultProvider string        `yaml:"default_provider"` // "gemini", "claude", "ollama", "litellm"
+	Gemini          GeminiConfig  `yaml:"gemini"`
+	Claude          ClaudeConfig  `yaml:"claude"`
+	Ollama          OllamaConfig  `yaml:"ollama"`
+	LiteLLM         LiteLLMConfig `yaml:"litellm"`
 }
 
 type GeminiConfig struct {
@@ -40,6 +41,12 @@ type ClaudeConfig struct {
 type OllamaConfig struct {
 	Endpoint string `yaml:"endpoint"`
 	Model    string `yaml:"model"`
+}
+
+type LiteLLMConfig struct {
+	Endpoint string `yaml:"endpoint"`
+	Model    string `yaml:"model"`
+	APIKey   string `yaml:"api_key"`
 }
 
 type TargetConfig struct {
@@ -79,6 +86,11 @@ func DefaultConfig() *Config {
 			Ollama: OllamaConfig{
 				Endpoint: "http://127.0.0.1:11434",
 				Model:    "gemma4:e2b",
+			},
+			LiteLLM: LiteLLMConfig{
+				Endpoint: "http://127.0.0.1:4000",
+				Model:    "gemini-3.5-flash",
+				APIKey:   "",
 			},
 		},
 		Targets: []TargetConfig{

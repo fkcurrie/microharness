@@ -29,6 +29,8 @@ func NewClient(cfg *config.LLMConfig) (Client, error) {
 			return nil, fmt.Errorf("claude provider selected but ANTHROPIC_API_KEY is empty")
 		}
 		return NewClaudeClient(cfg.Claude.APIKey, cfg.Claude.Model), nil
+	case "litellm":
+		return NewLiteLLMClient(cfg.LiteLLM.Endpoint, cfg.LiteLLM.Model, cfg.LiteLLM.APIKey), nil
 	default:
 		// Fallback to Ollama or return error
 		return NewOllamaClient(cfg.Ollama.Endpoint, cfg.Ollama.Model), nil
