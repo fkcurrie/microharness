@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -314,6 +315,85 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						return m, func() tea.Msg { return fmt.Sprintf("❌ Failed to create skill %s: %v", name, err) }
 					}
 					return m, func() tea.Msg { return fmt.Sprintf("✅ Created new skill '%s' and added to catalog!", name) }
+				}
+			}
+
+			// Add target command handling
+			if strings.HasPrefix(cmdLower, "add target ") || strings.HasPrefix(cmdLower, "/addtarget ") || strings.HasPrefix(cmdLower, "/add-target ") {
+				raw := input
+				if idx := strings.Index(strings.ToLower(raw), "target "); idx != -1 {
+					raw = raw[idx+7:]
+				} else if idx := strings.Index(strings.ToLower(raw), "addtarget "); idx != -1 {
+					raw = raw[idx+10:]
+				} else if idx := strings.Index(strings.ToLower(raw), "add-target "); idx != -1 {
+					raw = raw[idx+11:]
+				}
+
+				var name, host, user string
+				if strings.Contains(raw, "|") {
+					parts := strings.Split(raw, "|")
+					if len(parts) >= 1 {
+						name = strings.TrimSpace(parts[0])
+					}
+					if len(parts) >= 2 {
+						host = strings.TrimSpace(parts[1])
+					}
+					if len(parts) >= 3 {
+						user = strings.TrimSpace(parts[2])
+					}
+				} else {
+					fields := strings.Fields(raw)
+					if len(fields) >= 1 {
+						name = fields[0]
+					}
+					if len(fields) >= 2 {
+						host = fields[1]
+					}
+					if len(fields) >= 3 {
+						user = fields[2]
+					}
+				}
+
+				if name == "" || host == "" {
+					return m, func() tea.Msg {
+						return "⚠️ Usage: `add target <name> | <host> | <user>` (e.g., `add target pxe-server | 192.168.100.200 | root`)"
+					}
+				}
+
+				if user == "" {
+					user = "root"
+				}
+
+				// Check for duplicate target names
+				for _, t := range m.cfg.Targets {
+					if t.Name == name {
+						return m, func() tea.Msg { return fmt.Sprintf("❌ Target '%s' is already registered.", name) }
+					}
+				}
+
+				newTarget := config.TargetConfig{
+					Name: name,
+					Type: "ssh",
+					Host: host,
+					User: user,
+				}
+
+				m.cfg.Targets = append(m.cfg.Targets, newTarget)
+				home, _ := filepath.Abs(".")
+				if h, err := filepath.Abs("~"); err == nil {
+					home = h
+				}
+				userHome, _ := filepath.Abs("/home/fcurrie")
+				if userHome != "" {
+					home = userHome
+				}
+				cfgPath := filepath.Join(home, ".config", "microharness", "config.yaml")
+				if err := m.cfg.Save(cfgPath); err != nil {
+					return m, func() tea.Msg { return fmt.Sprintf("❌ Failed to save updated target config: %v", err) }
+				}
+
+				return m, func() tea.Msg {
+					return fmt.Sprintf("✅ Successfully added new target '%s' (ssh: %s@%s) to config.yaml!", name, user, host)
 				}
 			}
 
