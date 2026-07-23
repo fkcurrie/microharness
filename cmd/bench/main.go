@@ -5,10 +5,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"microharness/pkg/config"
 	"microharness/pkg/llm"
+	"microharness/pkg/skills"
+	"microharness/pkg/sysinfo"
 )
 
 type BenchmarkCase struct {
@@ -47,6 +50,16 @@ func main() {
 			MaxTarget: 5000 * time.Millisecond,
 		},
 		{
+			Name:      "Monitored Systems Query",
+			Prompt:    "give the list of systems?",
+			MaxTarget: 5000 * time.Millisecond,
+		},
+		{
+			Name:      "Skills Catalog Query",
+			Prompt:    "what skills are installed?",
+			MaxTarget: 5000 * time.Millisecond,
+		},
+		{
 			Name:      "System Status Query",
 			Prompt:    "Check system load and memory status",
 			MaxTarget: 5000 * time.Millisecond,
@@ -58,6 +71,40 @@ func main() {
 		},
 	}
 
+	// Initialize Skills Manager for Context Grounding
+	skillsCatalog := "sys_health, top_processes, disk_analyzer, journal_errors"
+	skMgr := skills.NewManager(cfg.SkillsDir)
+	if err := skMgr.LoadSkills(); err == nil {
+		var skNames []string
+		for _, sk := range skMgr.ListSkills() {
+			skNames = append(skNames, fmt.Sprintf("%s (%s)", sk.Name, sk.Description))
+		}
+		if len(skNames) > 0 {
+			skillsCatalog = strings.Join(skNames, "; ")
+		}
+	}
+
+	var targetStrs []string
+	for _, t := range cfg.Targets {
+		if t.Type == "ssh" {
+			targetStrs = append(targetStrs, fmt.Sprintf("%s (ssh: %s@%s)", t.Name, t.User, t.Host))
+		} else {
+			targetStrs = append(targetStrs, fmt.Sprintf("%s (local host)", t.Name))
+		}
+	}
+	if len(targetStrs) == 0 {
+		targetStrs = append(targetStrs, "local (local host)")
+	}
+
+	stats, _ := sysinfo.GetStats()
+	telemetry := "CPU/RAM/Disk nominal"
+	if stats != nil {
+		telemetry = stats.Summary()
+	}
+
+	ctxBlock := fmt.Sprintf("Monitored Target Systems: [%s]\nAvailable Skills Catalog: [%s]\nLive System Telemetry: %s",
+		strings.Join(targetStrs, ", "), skillsCatalog, telemetry)
+
 	failed := false
 
 	for i, tc := range testCases {
@@ -66,7 +113,7 @@ func main() {
 		fmt.Printf("  • Target Max Latency: %v\n", tc.MaxTarget)
 
 		start := time.Now()
-		fullPrompt := fmt.Sprintf("%s\n\nUser Query: %s", config.GetSoulContent(), tc.Prompt)
+		fullPrompt := fmt.Sprintf("%s\n\n=== REAL-TIME SYSTEM CONTEXT ===\n%s\n===============================\n\nUser Query: %s", config.GetSoulContent(), ctxBlock, tc.Prompt)
 		resp, err := llmClient.Generate(context.Background(), fullPrompt, nil)
 		elapsed := time.Since(start)
 
