@@ -137,6 +137,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.viewport.Height = vpHeight
 		m.textarea.SetWidth(leftWidth - 4)
+		m.renderViewport()
 
 	case tea.KeyMsg:
 		switch msg.Type {
@@ -412,17 +413,27 @@ func (m model) View() string {
 }
 
 func (m *model) renderViewport() {
+	wrapWidth := m.viewport.Width
+	if wrapWidth <= 0 {
+		wrapWidth = 60
+	}
+	wrapStyle := lipgloss.NewStyle().Width(wrapWidth)
+
 	var sb strings.Builder
 	for _, msg := range m.history {
 		if msg.Role == "user" {
-			sb.WriteString(fmt.Sprintf("\x1b[1;36mYou:\x1b[0m %s\n\n", msg.Content))
+			header := "\x1b[1;36mYou:\x1b[0m\n"
+			content := wrapStyle.Render(msg.Content)
+			sb.WriteString(fmt.Sprintf("%s%s\n\n", header, content))
 		} else {
-			sb.WriteString(fmt.Sprintf("\x1b[1;32mAgent (%s):\x1b[0m %s\n\n", m.cfg.LLM.DefaultProvider, msg.Content))
+			header := fmt.Sprintf("\x1b[1;32mAgent (%s):\x1b[0m\n", m.cfg.LLM.DefaultProvider)
+			content := wrapStyle.Render(msg.Content)
+			sb.WriteString(fmt.Sprintf("%s%s\n\n", header, content))
 		}
 	}
 
 	if m.loading && m.statusMsg != "" {
-		sb.WriteString(fmt.Sprintf("\x1b[1;33mProcess:\x1b[0m %s", m.statusMsg))
+		sb.WriteString(fmt.Sprintf("\x1b[1;33mProcess:\x1b[0m %s", wrapStyle.Render(m.statusMsg)))
 	}
 
 	m.viewport.SetContent(sb.String())
