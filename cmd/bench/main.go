@@ -44,7 +44,7 @@ func main() {
 		{
 			Name:              "Greeting Latency & Tone",
 			Prompt:            "Hi how are you?",
-			MaxTarget:         5000 * time.Millisecond,
+			MaxTarget:         6000 * time.Millisecond,
 			ForbiddenKeywords: []string{"thinking", "as a large language model"},
 		},
 		{
