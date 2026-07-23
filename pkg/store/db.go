@@ -98,6 +98,30 @@ func (s *Store) GetRecentJobLogs(limit int) ([]JobLog, error) {
 	return logs, nil
 }
 
+func (s *Store) GetRecentMessages(limit int) ([]ChatMessage, error) {
+	rows, err := s.db.Query("SELECT id, role, content, created_at FROM chat_messages ORDER BY id DESC LIMIT ?", limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var msgs []ChatMessage
+	for rows.Next() {
+		var m ChatMessage
+		if err := rows.Scan(&m.ID, &m.Role, &m.Content, &m.CreatedAt); err != nil {
+			return nil, err
+		}
+		msgs = append(msgs, m)
+	}
+
+	// Reverse to return in chronological order
+	for i, j := 0, len(msgs)-1; i < j; i, j = i+1, j-1 {
+		msgs[i], msgs[j] = msgs[j], msgs[i]
+	}
+
+	return msgs, nil
+}
+
 func (s *Store) Close() error {
 	return s.db.Close()
 }

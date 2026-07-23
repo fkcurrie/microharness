@@ -79,20 +79,33 @@ func NewModel(cfg *config.Config, llmClient llm.Client, skillMgr *skills.Manager
 
 	stats, _ := sysinfo.GetStats()
 	var logs []store.JobLog
+	var initialHistory []llm.Message
+
 	if dbStore != nil {
 		logs, _ = dbStore.GetRecentJobLogs(5)
+		if chatMsgs, err := dbStore.GetRecentMessages(50); err == nil {
+			for _, cm := range chatMsgs {
+				initialHistory = append(initialHistory, llm.Message{
+					Role:    cm.Role,
+					Content: cm.Content,
+				})
+			}
+		}
 	}
 
-	return model{
+	m := model{
 		cfg:        cfg,
 		llmClient:  llmClient,
 		skillMgr:   skillMgr,
 		dbStore:    dbStore,
 		textarea:   ta,
 		viewport:   vp,
+		history:    initialHistory,
 		sysStats:   stats,
 		recentLogs: logs,
 	}
+	m.renderViewport()
+	return m
 }
 
 func (m model) Init() tea.Cmd {
