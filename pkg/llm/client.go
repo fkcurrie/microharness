@@ -21,18 +21,23 @@ func NewClient(cfg *config.LLMConfig) (Client, error) {
 		return NewOllamaClient(cfg.Ollama.Endpoint, cfg.Ollama.Model), nil
 	case "gemini":
 		if cfg.Gemini.APIKey == "" {
+			if cfg.Ollama.Model != "" {
+				return NewOllamaClient(cfg.Ollama.Endpoint, cfg.Ollama.Model), nil
+			}
 			return nil, fmt.Errorf("gemini provider selected but GEMINI_API_KEY is empty")
 		}
 		return NewGeminiClient(cfg.Gemini.APIKey, cfg.Gemini.Model), nil
 	case "claude":
 		if cfg.Claude.APIKey == "" {
+			if cfg.Ollama.Model != "" {
+				return NewOllamaClient(cfg.Ollama.Endpoint, cfg.Ollama.Model), nil
+			}
 			return nil, fmt.Errorf("claude provider selected but ANTHROPIC_API_KEY is empty")
 		}
 		return NewClaudeClient(cfg.Claude.APIKey, cfg.Claude.Model), nil
 	case "litellm":
 		return NewLiteLLMClient(cfg.LiteLLM.Endpoint, cfg.LiteLLM.Model, cfg.LiteLLM.APIKey), nil
 	default:
-		// Fallback to Ollama or return error
 		return NewOllamaClient(cfg.Ollama.Endpoint, cfg.Ollama.Model), nil
 	}
 }

@@ -44,6 +44,12 @@ func AutoDiscover() (*Config, map[string]string) {
 			cfg.LLM.Ollama.Endpoint = "http://127.0.0.1:11434"
 			cfg.LLM.Ollama.Model = tags.Models[0].Name
 			discovered["Local Ollama Server"] = fmt.Sprintf("Found at 127.0.0.1:11434 with models: %s", tags.Models[0].Name)
+
+			// If no cloud API keys were detected, automatically default to local Ollama!
+			if cfg.LLM.Gemini.APIKey == "" && cfg.LLM.Claude.APIKey == "" {
+				cfg.LLM.DefaultProvider = "ollama"
+				discovered["Active Brain Provider"] = fmt.Sprintf("Auto-selected local open model '%s' (Zero API keys required)", tags.Models[0].Name)
+			}
 		}
 		resp.Body.Close()
 	}
