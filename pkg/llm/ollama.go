@@ -30,9 +30,10 @@ func NewOllamaClient(endpoint, model string) *OllamaClient {
 }
 
 type ollamaChatRequest struct {
-	Model    string          `json:"model"`
-	Messages []ollamaMessage `json:"messages"`
-	Stream   bool            `json:"stream"`
+	Model    string                 `json:"model"`
+	Messages []ollamaMessage        `json:"messages"`
+	Stream   bool                   `json:"stream"`
+	Options  map[string]interface{} `json:"options,omitempty"`
 }
 
 type ollamaMessage struct {
@@ -57,6 +58,10 @@ func (c *OllamaClient) Generate(ctx context.Context, prompt string, history []Me
 		Model:    c.model,
 		Messages: reqMsgs,
 		Stream:   false,
+		Options: map[string]interface{}{
+			"num_ctx":     2048,
+			"num_predict": 100,
+		},
 	})
 	if err != nil {
 		return "", err

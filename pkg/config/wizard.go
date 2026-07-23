@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -42,15 +43,24 @@ func AutoDiscover() (*Config, map[string]string) {
 	if err == nil && resp.StatusCode == 200 {
 		var tags OllamaTagsResponse
 		if err := json.NewDecoder(resp.Body).Decode(&tags); err == nil && len(tags.Models) > 0 {
+			// Pick the most responsive lightweight model (prefer 4b/e4b/8b for sub-2s latency over heavy 26b/31b)
+			bestModel := tags.Models[0].Name
+			for _, m := range tags.Models {
+				if strings.Contains(m.Name, "e4b") || strings.Contains(m.Name, "4b") || strings.Contains(m.Name, "8b") {
+					bestModel = m.Name
+					break
+				}
+			}
+
 			cfg.LLM.Ollama.Endpoint = "http://127.0.0.1:11434"
-			cfg.LLM.Ollama.Model = tags.Models[0].Name
-			discovered["Local Ollama Server"] = fmt.Sprintf("Found at 127.0.0.1:11434 with models: %s", tags.Models[0].Name)
+			cfg.LLM.Ollama.Model = bestModel
+			discovered["Local Ollama Server"] = fmt.Sprintf("Found at 127.0.0.1:11434 (Auto-selected fast model: %s)", bestModel)
 
 			// If no cloud API keys were detected, automatically default to local Ollama!
 			if cfg.LLM.Gemini.APIKey == "" && cfg.LLM.Claude.APIKey == "" {
 				cfg.LLM.DefaultProvider = "ollama"
-				discovered["Active Brain Provider"] = fmt.Sprintf("Auto-selected local open model '%s' (Zero API keys required)", tags.Models[0].Name)
-				discovered["Model Latency Benchmark"] = BenchmarkAndTuneModel(cfg.LLM.Ollama.Endpoint, tags.Models[0].Name)
+				discovered["Active Brain Provider"] = fmt.Sprintf("Auto-selected local open model '%s' (Zero API keys required)", bestModel)
+				discovered["Model Latency Benchmark"] = BenchmarkAndTuneModel(cfg.LLM.Ollama.Endpoint, bestModel)
 			}
 		}
 		resp.Body.Close()
