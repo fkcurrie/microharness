@@ -71,7 +71,7 @@ type model struct {
 
 func NewModel(cfg *config.Config, llmClient llm.Client, skillMgr *skills.Manager, dbStore *store.Store) model {
 	ta := textarea.New()
-	ta.Placeholder = "Type a prompt or command (e.g. 'check system health', 'run skill sys_health')..."
+	ta.Placeholder = "Type a prompt or /help for slash commands (/sessions, /new, /skills, /clear)..."
 	ta.Focus()
 	ta.Prompt = "│ "
 	ta.CharLimit = 500
@@ -207,6 +207,85 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			if m.dbStore != nil {
 				_ = m.dbStore.SaveMessage(m.sessionID, "user", input)
+			}
+
+			// Slash command handling
+			cmdLower := strings.ToLower(input)
+			if cmdLower == "/sessions" || cmdLower == "/resume" || cmdLower == "/session" {
+				if m.dbStore != nil {
+					if sessList, err := m.dbStore.GetRecentSessions(8); err == nil && len(sessList) > 0 {
+						m.sessions = sessList
+						m.selectingSess = true
+						m.selectedSessIdx = 0
+						return m, nil
+					}
+				}
+				return m, func() tea.Msg { return "⚠️ No previous chat sessions found in database." }
+			}
+
+			if cmdLower == "/new" {
+				m.sessionID = fmt.Sprintf("s-%s", time.Now().Format("20060102-150405"))
+				m.history = nil
+				m.renderViewport()
+				return m, func() tea.Msg { return fmt.Sprintf("✨ Started new chat session [%s]!", m.sessionID) }
+			}
+
+			if cmdLower == "/clear" {
+				m.history = nil
+				m.renderViewport()
+				return m, nil
+			}
+
+			if cmdLower == "/help" {
+				helpTxt := `💡 MicroHarness TUI Slash Commands:
+• /sessions or /resume — Switch chat session via interactive menu
+• /new               — Start a fresh chat session
+• /clear             — Clear current chat screen history
+• /skills            — List installed skills catalog
+• /targets           — List monitored target systems
+• /stats             — Display live system telemetry & model token stats
+• /help              — Show this help message`
+				return m, func() tea.Msg { return helpTxt }
+			}
+
+			if cmdLower == "/skills" {
+				if m.skillMgr == nil {
+					return m, func() tea.Msg { return "No skill manager loaded." }
+				}
+				skList := m.skillMgr.ListSkills()
+				var lines []string
+				lines = append(lines, "🛠️ Installed Skills Catalog:")
+				for _, sk := range skList {
+					lines = append(lines, fmt.Sprintf("  • %s — %s", sk.Name, sk.Description))
+				}
+				return m, func() tea.Msg { return strings.Join(lines, "\n") }
+			}
+
+			if cmdLower == "/targets" {
+				if len(m.cfg.Targets) == 0 {
+					return m, func() tea.Msg { return "No target systems configured in config.yaml." }
+				}
+				var lines []string
+				lines = append(lines, "🖥️ Monitored Target Systems:")
+				for _, t := range m.cfg.Targets {
+					if t.Type == "ssh" {
+						lines = append(lines, fmt.Sprintf("  • %s (ssh: %s@%s)", t.Name, t.User, t.Host))
+					} else {
+						lines = append(lines, fmt.Sprintf("  • %s (local host)", t.Name))
+					}
+				}
+				return m, func() tea.Msg { return strings.Join(lines, "\n") }
+			}
+
+			if cmdLower == "/stats" {
+				statsInfo := fmt.Sprintf(
+					"📊 Live Telemetry & Model Usage Stats:\n• Host: %s (%s/%s)\n• CPUs: %d | Load: %.2f\n• RAM: %dMB / %dMB\n• Total Requests: %d\n• Total Tokens: ~%d",
+					m.sysStats.Hostname, m.sysStats.OS, m.sysStats.Arch,
+					m.sysStats.CPUCount, m.sysStats.LoadAvg1,
+					m.sysStats.MemUsedMB, m.sysStats.MemTotalMB,
+					m.llmStats.TotalRequests, m.llmStats.TotalTokens,
+				)
+				return m, func() tea.Msg { return statsInfo }
 			}
 
 			// Check for direct skill invocation or creation
@@ -506,7 +585,7 @@ func (m model) View() string {
 	// Combine Panes horizontally
 	mainView := lipgloss.JoinHorizontal(lipgloss.Top, leftPane, rightPane)
 
-	footer := fmt.Sprintf("\n[Enter] Send Message  │  [Esc] Quit  │  Time: %s", time.Now().Format("15:04:05"))
+	footer := fmt.Sprintf("\n[Enter] Send Message  │  [/help] Commands  │  [Esc] Quit  │  Time: %s", time.Now().Format("15:04:05"))
 
 	return lipgloss.JoinVertical(lipgloss.Left, header, mainView, footer)
 }
