@@ -180,6 +180,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.statusMsg = "⏳ [1/4] Parsing query & inspecting context..."
 				m.renderViewport()
 
+				historySnapshot := make([]llm.Message, len(m.history))
+				copy(historySnapshot, m.history)
+
 				generateCmd := func() tea.Msg {
 					start := time.Now()
 					soul := config.GetSoulContent()
@@ -190,7 +193,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						}
 					}
 
-					resp, err := m.llmClient.Generate(context.Background(), prompt, m.history)
+					resp, err := m.llmClient.Generate(context.Background(), prompt, historySnapshot)
 					elapsed := time.Since(start)
 					if err != nil {
 						return llmResponseMsg{err: err}

@@ -61,7 +61,8 @@ func main() {
 		fmt.Printf("  • Target Max Latency: %v\n", tc.MaxTarget)
 
 		start := time.Now()
-		resp, err := llmClient.Generate(context.Background(), tc.Prompt, nil)
+		fullPrompt := fmt.Sprintf("%s\n\nUser Query: %s", config.GetSoulContent(), tc.Prompt)
+		resp, err := llmClient.Generate(context.Background(), fullPrompt, nil)
 		elapsed := time.Since(start)
 
 		if err != nil {

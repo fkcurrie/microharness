@@ -37,8 +37,9 @@ type ollamaChatRequest struct {
 }
 
 type ollamaMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role     string `json:"role"`
+	Content  string `json:"content"`
+	Thinking string `json:"thinking,omitempty"`
 }
 
 type ollamaChatResponse struct {
@@ -47,6 +48,11 @@ type ollamaChatResponse struct {
 
 func (c *OllamaClient) Generate(ctx context.Context, prompt string, history []Message) (string, error) {
 	var reqMsgs []ollamaMessage
+	reqMsgs = append(reqMsgs, ollamaMessage{
+		Role:    "system",
+		Content: "Respond immediately and concisely. Do not output internal thinking or reasoning steps.",
+	})
+
 	for _, h := range history {
 		reqMsgs = append(reqMsgs, ollamaMessage{Role: h.Role, Content: h.Content})
 	}
@@ -60,7 +66,8 @@ func (c *OllamaClient) Generate(ctx context.Context, prompt string, history []Me
 		Stream:   false,
 		Options: map[string]interface{}{
 			"num_ctx":     2048,
-			"num_predict": 60,
+			"num_predict": 80,
+			"think":       false,
 		},
 	})
 	if err != nil {
@@ -88,5 +95,12 @@ func (c *OllamaClient) Generate(ctx context.Context, prompt string, history []Me
 		return "", err
 	}
 
-	return res.Message.Content, nil
+	if res.Message.Content != "" {
+		return res.Message.Content, nil
+	}
+	if res.Message.Thinking != "" {
+		return res.Message.Thinking, nil
+	}
+
+	return "No response generated.", nil
 }
