@@ -36,6 +36,17 @@ type llmResponseMsg struct {
 	err          error
 }
 
+type statusStepMsg struct {
+	text string
+	step int
+}
+
+func tickStatusCmd(text string, step int, delay time.Duration) tea.Cmd {
+	return tea.Tick(delay, func(time.Time) tea.Msg {
+		return statusStepMsg{text: text, step: step}
+	})
+}
+
 type model struct {
 	cfg        *config.Config
 	llmClient  llm.Client
@@ -48,6 +59,7 @@ type model struct {
 	sysStats   *sysinfo.SystemStats
 	recentLogs []store.JobLog
 	llmStats   LLMStats
+	statusMsg  string
 	width      int
 	height     int
 	loading    bool
@@ -165,7 +177,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Process via LLM Client if available
 			if m.llmClient != nil {
 				m.loading = true
-				return m, func() tea.Msg {
+				m.statusMsg = "⏳ [1/4] Parsing query & inspecting context..."
+				m.renderViewport()
+
+				generateCmd := func() tea.Msg {
 					start := time.Now()
 					prompt := input
 					if strings.Contains(strings.ToLower(input), "health") || strings.Contains(strings.ToLower(input), "stats") {
@@ -196,12 +211,30 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						latency:      elapsed,
 					}
 				}
+
+				return m, tea.Batch(
+					generateCmd,
+					tickStatusCmd("🧠 [2/4] Planning skill execution strategy...", 2, 350*time.Millisecond),
+				)
 			}
 
 		}
 
+	case statusStepMsg:
+		if m.loading {
+			m.statusMsg = msg.text
+			m.renderViewport()
+			switch msg.step {
+			case 2:
+				return m, tickStatusCmd("⚡ [3/4] Offloading prompt to model engine...", 3, 400*time.Millisecond)
+			case 3:
+				return m, tickStatusCmd("✨ [4/4] Generating response stream...", 4, 450*time.Millisecond)
+			}
+		}
+
 	case llmResponseMsg:
 		m.loading = false
+		m.statusMsg = ""
 		if msg.err != nil {
 			msgStr := fmt.Sprintf("Agent Error: %v", msg.err)
 			m.history = append(m.history, llm.Message{Role: "assistant", Content: msgStr})
@@ -224,6 +257,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case string:
 		m.loading = false
+		m.statusMsg = ""
 		m.history = append(m.history, llm.Message{Role: "assistant", Content: msg})
 		m.renderViewport()
 
@@ -340,6 +374,11 @@ func (m *model) renderViewport() {
 			sb.WriteString(fmt.Sprintf("\x1b[1;32mAgent (%s):\x1b[0m %s\n\n", m.cfg.LLM.DefaultProvider, msg.Content))
 		}
 	}
+
+	if m.loading && m.statusMsg != "" {
+		sb.WriteString(fmt.Sprintf("\x1b[1;33mProcess:\x1b[0m %s", m.statusMsg))
+	}
+
 	m.viewport.SetContent(sb.String())
 	m.viewport.GotoBottom()
 }
