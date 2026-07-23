@@ -1,11 +1,15 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"path/filepath"
+	"time"
 
 	"microharness/pkg/config"
 	"microharness/pkg/llm"
@@ -37,9 +41,111 @@ func main() {
 	case "daemon":
 		runDaemon(*configPath)
 
+	case "set-provider":
+		if len(args) < 2 {
+			fmt.Println("Usage: microharness set-provider <gemini|claude|ollama>")
+			os.Exit(1)
+		}
+		runSetProvider(*configPath, args[1])
+
+	case "model":
+		if len(args) < 2 {
+			fmt.Println("Usage:\n  microharness model list\n  microharness model pull <model_name>")
+			os.Exit(1)
+		}
+		subCmd := args[1]
+		if subCmd == "list" {
+			runModelList(*configPath)
+		} else if subCmd == "pull" && len(args) >= 3 {
+			runModelPull(*configPath, args[2])
+		} else {
+			fmt.Println("Usage:\n  microharness model list\n  microharness model pull <model_name>")
+		}
+
 	default:
 		runTUI(*configPath)
 	}
+}
+
+func runSetProvider(configPath, provider string) {
+	cfg, err := config.LoadConfig(configPath)
+	if err != nil {
+		log.Fatalf("Failed to load config: %v", err)
+	}
+
+	cfg.LLM.DefaultProvider = provider
+	if err := cfg.Save(configPath); err != nil {
+		log.Fatalf("Failed to save config: %v", err)
+	}
+
+	fmt.Printf("✅ Active LLM provider updated to: '%s'\n", provider)
+}
+
+func runModelList(configPath string) {
+	cfg, err := config.LoadConfig(configPath)
+	if err != nil {
+		cfg = config.DefaultConfig()
+	}
+
+	client := &http.Client{Timeout: 3 * time.Second}
+	resp, err := client.Get(cfg.LLM.Ollama.Endpoint + "/api/tags")
+	if err != nil {
+		fmt.Printf("❌ Unable to connect to local Ollama server at %s: %v\n", cfg.LLM.Ollama.Endpoint, err)
+		return
+	}
+	defer resp.Body.Close()
+
+	var tags struct {
+		Models []struct {
+			Name string `json:"name"`
+		} `json:"models"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&tags); err != nil {
+		fmt.Printf("Error parsing response: %v\n", err)
+		return
+	}
+
+	fmt.Println("=== Installed Local Open Models ===")
+	if len(tags.Models) == 0 {
+		fmt.Println("  (No models installed yet. Run 'microharness model pull gemma4:e2b' to download one)")
+		return
+	}
+	for _, m := range tags.Models {
+		fmt.Printf("  • %s\n", m.Name)
+	}
+}
+
+func runModelPull(configPath, modelName string) {
+	cfg, err := config.LoadConfig(configPath)
+	if err != nil {
+		cfg = config.DefaultConfig()
+	}
+
+	fmt.Printf("⏳ Downloading pre-trained model '%s' via Ollama (%s)...\n", modelName, cfg.LLM.Ollama.Endpoint)
+
+	body, _ := json.Marshal(map[string]interface{}{
+		"name":   modelName,
+		"stream": false,
+	})
+
+	client := &http.Client{Timeout: 10 * time.Minute}
+	resp, err := client.Post(cfg.LLM.Ollama.Endpoint+"/api/pull", "application/json", bytes.NewBuffer(body))
+	if err != nil {
+		log.Fatalf("❌ Download failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		log.Fatalf("❌ Ollama API returned status code %d", resp.StatusCode)
+	}
+
+	// Update config to use this model and provider
+	cfg.LLM.Ollama.Model = modelName
+	cfg.LLM.DefaultProvider = "ollama"
+	_ = cfg.Save(configPath)
+
+	fmt.Printf("✅ Pre-trained model '%s' downloaded successfully!\n", modelName)
+	fmt.Printf("   Updated config: default_provider set to 'ollama' (model: %s)\n", modelName)
 }
 
 func runInit(configPath string) {
@@ -55,7 +161,6 @@ func runInit(configPath string) {
 		log.Fatalf("❌ Failed to save config to %s: %v", configPath, err)
 	}
 
-	// Create default skills directory and files
 	_ = os.MkdirAll(cfg.SkillsDir, 0755)
 
 	fmt.Printf("\n✅ MicroHarness initialized successfully!\n")
@@ -88,7 +193,6 @@ func runDaemon(configPath string) {
 func runTUI(configPath string) {
 	cfg, err := config.LoadConfig(configPath)
 	if err != nil {
-		// Auto-initialize if config file does not exist!
 		cfg, _ = config.AutoDiscover()
 		_ = cfg.Save(configPath)
 	}
@@ -103,17 +207,9 @@ func runTUI(configPath string) {
 	skillMgr := skills.NewManager(cfg.SkillsDir)
 	_ = skillMgr.LoadSkills()
 
-	// Initialize LLM Client
 	llmClient, err := llm.NewClient(&cfg.LLM)
 	if err != nil {
 		log.Printf("LLM Initialization Notice: %v (falling back to offline mode)", err)
-	}
-
-	// Also ensure local skills directory exists
-	localSkillMgr := skills.NewManager("skills")
-	_ = localSkillMgr.LoadSkills()
-	for _, s := range localSkillMgr.ListSkills() {
-		_ = s
 	}
 
 	model := tui.NewModel(cfg, llmClient, skillMgr, dbStore)

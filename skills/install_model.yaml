@@ -1,0 +1,9 @@
+name: install_model
+description: Downloads and installs a local open-weights pre-trained model (e.g. gemma4:e2b, gemma4:12b, llama3) using local Ollama engine.
+script: install_model.sh
+parameters:
+  type: object
+  properties:
+    model:
+      type: string
+      description: Name of the pre-trained model to pull (e.g., gemma4:e2b, gemma4:e4b, gemma4:12b)
