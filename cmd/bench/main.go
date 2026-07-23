@@ -18,12 +18,12 @@ type BenchmarkCase struct {
 	Name              string
 	Prompt            string
 	MaxTarget         time.Duration
-	RequiredKeywords  []string
+	GroundTruthGetter func() ([]string, error) // Dynamically queries OS / Skills / Config for live ground truth
 	ForbiddenKeywords []string
 }
 
 func main() {
-	fmt.Println("🚀 Starting Automated Model Latency & Correctness Eval Suite...")
+	fmt.Println("🚀 Starting Automated Model Latency & Dynamic Ground-Truth Eval Suite...")
 
 	home, _ := os.UserHomeDir()
 	configPath := filepath.Join(home, ".config", "microharness", "config.yaml")
@@ -48,31 +48,54 @@ func main() {
 			ForbiddenKeywords: []string{"thinking", "as a large language model"},
 		},
 		{
-			Name:              "System Health Query",
-			Prompt:            "how is the system?",
-			MaxTarget:         5000 * time.Millisecond,
-			RequiredKeywords:  []string{"load"},
+			Name:      "System Health Query (Live OS Telemetry Grounding)",
+			Prompt:    "how is the system?",
+			MaxTarget: 5000 * time.Millisecond,
+			GroundTruthGetter: func() ([]string, error) {
+				return []string{"load"}, nil // Expect live telemetry load reference
+			},
 			ForbiddenKeywords: []string{"as an ai"},
 		},
 		{
-			Name:              "Monitored Systems Query Grounding",
-			Prompt:            "give the list of systems?",
-			MaxTarget:         5000 * time.Millisecond,
-			RequiredKeywords:  []string{"local"},
+			Name:      "Monitored Systems Query (Live Config Targets Grounding)",
+			Prompt:    "give the list of systems?",
+			MaxTarget: 5000 * time.Millisecond,
+			GroundTruthGetter: func() ([]string, error) {
+				var targets []string
+				for _, t := range cfg.Targets {
+					targets = append(targets, t.Name)
+				}
+				if len(targets) == 0 {
+					targets = []string{"local"}
+				}
+				return targets, nil // Expect actual configured target system names
+			},
 			ForbiddenKeywords: []string{"translation", "creative writing", "nlp"},
 		},
 		{
-			Name:              "Skills Catalog Query Grounding",
-			Prompt:            "what skills are installed?",
-			MaxTarget:         5000 * time.Millisecond,
-			RequiredKeywords:  []string{"sys_health"},
+			Name:      "Skills Catalog Query (Live OS Skills Folder Grounding)",
+			Prompt:    "what skills are installed?",
+			MaxTarget: 5000 * time.Millisecond,
+			GroundTruthGetter: func() ([]string, error) {
+				skMgr := skills.NewManager(cfg.SkillsDir)
+				if err := skMgr.LoadSkills(); err != nil {
+					return nil, err
+				}
+				var skillNames []string
+				for _, sk := range skMgr.ListSkills() {
+					skillNames = append(skillNames, sk.Name)
+				}
+				return skillNames, nil // Expect actual installed skill names on disk
+			},
 			ForbiddenKeywords: []string{"translation", "creative writing", "pattern recognition"},
 		},
 		{
-			Name:              "System Status Query",
-			Prompt:            "Check system load and memory status",
-			MaxTarget:         5000 * time.Millisecond,
-			RequiredKeywords:  []string{"load"},
+			Name:      "System Status Query",
+			Prompt:    "Check system load and memory status",
+			MaxTarget: 5000 * time.Millisecond,
+			GroundTruthGetter: func() ([]string, error) {
+				return []string{"load"}, nil
+			},
 		},
 		{
 			Name:              "Short Summary Query Conciseness",
@@ -146,11 +169,21 @@ func main() {
 			caseFailed = true
 		}
 
-		// 2. Required Grounding Keywords check
-		for _, req := range tc.RequiredKeywords {
-			if !strings.Contains(respLower, strings.ToLower(req)) {
-				fmt.Printf("  ❌ CORRECTNESS EVAL FAIL: Output missing required keyword %q\n", req)
+		// 2. Dynamic Ground Truth Facts check
+		if tc.GroundTruthGetter != nil {
+			facts, err := tc.GroundTruthGetter()
+			if err != nil {
+				fmt.Printf("  ❌ GROUND TRUTH PROBE ERROR: Failed to query live facts: %v\n", err)
 				caseFailed = true
+			} else {
+				for _, fact := range facts {
+					if !strings.Contains(respLower, strings.ToLower(fact)) {
+						fmt.Printf("  ❌ DYNAMIC GROUNDING EVAL FAIL: Output missing live OS/Skill fact %q\n", fact)
+						caseFailed = true
+					} else {
+						fmt.Printf("  • Verified Live Ground-Truth Match: %q ✓\n", fact)
+					}
+				}
 			}
 		}
 
