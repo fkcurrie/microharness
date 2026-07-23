@@ -244,9 +244,38 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 • /clear             — Clear current chat screen history
 • /skills            — List installed skills catalog
 • /targets           — List monitored target systems
+• /discover or /scan — Discover network target hosts with open SSH port 22
 • /stats             — Display live system telemetry & model token stats
 • /help              — Show this help message`
 				return m, func() tea.Msg { return helpTxt }
+			}
+
+			if cmdLower == "/discover" || cmdLower == "/scan" || cmdLower == "discover targets" {
+				m.loading = true
+				m.statusMsg = "⏳ [1/2] Scanning subnet for open SSH port 22 and testing keys..."
+				m.renderViewport()
+
+				return m, func() tea.Msg {
+					discovered, err := sysinfo.DiscoverNetworkTargets(context.Background(), "root")
+					if err != nil {
+						return fmt.Sprintf("❌ Discovery error: %v", err)
+					}
+					if len(discovered) == 0 {
+						return "🔍 Network scan complete: No active SSH targets found on immediate neighbor subnets."
+					}
+
+					var lines []string
+					lines = append(lines, "🔍 Discovered Network Target Candidates (SSH Port 22 Open):")
+					for _, d := range discovered {
+						sshStatus := "🔒 Passwordless SSH: Key Needed (`ssh-copy-id " + d.User + "@" + d.IP + "`)"
+						if d.PasswordlessSSH {
+							sshStatus = fmt.Sprintf("🔑 Passwordless SSH: READY (User: %s | Hostname: %s)", d.User, d.Hostname)
+						}
+						lines = append(lines, fmt.Sprintf("  • IP: %s │ %s", d.IP, sshStatus))
+					}
+					lines = append(lines, "\n👉 To register a target, type: `add target <name> | <host> | <user>`")
+					return strings.Join(lines, "\n")
+				}
 			}
 
 			if cmdLower == "/skills" {
@@ -371,29 +400,39 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 
-				newTarget := config.TargetConfig{
-					Name: name,
-					Type: "ssh",
-					Host: host,
-					User: user,
-				}
-
-				m.cfg.Targets = append(m.cfg.Targets, newTarget)
-				home, _ := filepath.Abs(".")
-				if h, err := filepath.Abs("~"); err == nil {
-					home = h
-				}
-				userHome, _ := filepath.Abs("/home/fcurrie")
-				if userHome != "" {
-					home = userHome
-				}
-				cfgPath := filepath.Join(home, ".config", "microharness", "config.yaml")
-				if err := m.cfg.Save(cfgPath); err != nil {
-					return m, func() tea.Msg { return fmt.Sprintf("❌ Failed to save updated target config: %v", err) }
-				}
+				// Verify Passwordless SSH
+				m.loading = true
+				m.statusMsg = fmt.Sprintf("⏳ Verifying passwordless SSH connectivity to %s@%s...", user, host)
+				m.renderViewport()
 
 				return m, func() tea.Msg {
-					return fmt.Sprintf("✅ Successfully added new target '%s' (ssh: %s@%s) to config.yaml!", name, user, host)
+					sshOK, sshMsg := sysinfo.VerifyPasswordlessSSH(context.Background(), user, host)
+
+					newTarget := config.TargetConfig{
+						Name: name,
+						Type: "ssh",
+						Host: host,
+						User: user,
+					}
+
+					m.cfg.Targets = append(m.cfg.Targets, newTarget)
+					home, _ := filepath.Abs(".")
+					if h, err := filepath.Abs("~"); err == nil {
+						home = h
+					}
+					userHome, _ := filepath.Abs("/home/fcurrie")
+					if userHome != "" {
+						home = userHome
+					}
+					cfgPath := filepath.Join(home, ".config", "microharness", "config.yaml")
+					if err := m.cfg.Save(cfgPath); err != nil {
+						return fmt.Sprintf("❌ Failed to save updated target config: %v", err)
+					}
+
+					if sshOK {
+						return fmt.Sprintf("✅ Target '%s' (%s@%s) registered successfully in config.yaml!\n🔑 Passwordless SSH Verified: %s", name, user, host, sshMsg)
+					}
+					return fmt.Sprintf("⚠️ Target '%s' (%s@%s) registered in config.yaml, but passwordless SSH check failed:\n%s", name, user, host, sshMsg)
 				}
 			}
 
