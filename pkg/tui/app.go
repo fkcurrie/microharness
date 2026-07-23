@@ -84,10 +84,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 
-		chatWidth := (msg.Width * 6) / 10
-		m.viewport.Width = chatWidth - 4
-		m.viewport.Height = msg.Height - 10
-		m.textarea.SetWidth(chatWidth - 4)
+		leftWidth := (msg.Width * 6) / 10
+		if leftWidth < 35 {
+			leftWidth = 35
+		}
+		m.viewport.Width = leftWidth - 4
+		vpHeight := msg.Height - 12
+		if vpHeight < 5 {
+			vpHeight = 5
+		}
+		m.viewport.Height = vpHeight
+		m.textarea.SetWidth(leftWidth - 4)
 
 	case tea.KeyMsg:
 		switch msg.Type {
@@ -237,7 +244,11 @@ func (m model) View() string {
 		"\n"+titleStyle.Render("── Loaded Skills ──"),
 		fmt.Sprintf("Active Skills: %d loaded", len(m.skillMgr.ListSkills())),
 	)
-	rightPane := boxStyle.Width(35).Render(rightView)
+	rightWidth := m.width - ((m.width * 6) / 10) - 8
+	if rightWidth < 25 {
+		rightWidth = 25
+	}
+	rightPane := boxStyle.Width(rightWidth).Render(rightView)
 
 	// Combine Panes horizontally
 	mainView := lipgloss.JoinHorizontal(lipgloss.Top, leftPane, rightPane)
