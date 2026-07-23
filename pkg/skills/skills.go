@@ -1,0 +1,91 @@
+package skills
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"time"
+
+	"gopkg.in/yaml.v3"
+)
+
+type Skill struct {
+	Name        string                 `yaml:"name" json:"name"`
+	Description string                 `yaml:"description" json:"description"`
+	Script      string                 `yaml:"script" json:"script"`
+	Parameters  map[string]interface{} `yaml:"parameters" json:"parameters"`
+	Dir         string                 `json:"-"`
+}
+
+type Manager struct {
+	skillsDir string
+	skills    map[string]*Skill
+}
+
+func NewManager(skillsDir string) *Manager {
+	return &Manager{
+		skillsDir: skillsDir,
+		skills:    make(map[string]*Skill),
+	}
+}
+
+func (m *Manager) LoadSkills() error {
+	if _, err := os.Stat(m.skillsDir); os.IsNotExist(err) {
+		return nil
+	}
+
+	entries, err := os.ReadDir(m.skillsDir)
+	if err != nil {
+		return err
+	}
+
+	for _, entry := range entries {
+		if !entry.IsDir() && filepath.Ext(entry.Name()) == ".yaml" {
+			path := filepath.Join(m.skillsDir, entry.Name())
+			data, err := os.ReadFile(path)
+			if err != nil {
+				continue
+			}
+
+			var s Skill
+			if err := yaml.Unmarshal(data, &s); err == nil && s.Name != "" {
+				s.Dir = m.skillsDir
+				m.skills[s.Name] = &s
+			}
+		}
+	}
+	return nil
+}
+
+func (m *Manager) ListSkills() []*Skill {
+	var list []*Skill
+	for _, s := range m.skills {
+		list = append(list, s)
+	}
+	return list
+}
+
+func (m *Manager) Execute(ctx context.Context, name string, args []string) (string, error) {
+	skill, ok := m.skills[name]
+	if !ok {
+		return "", fmt.Errorf("skill '%s' not found", name)
+	}
+
+	scriptPath := filepath.Join(skill.Dir, skill.Script)
+	if _, err := os.Stat(scriptPath); err != nil {
+		return "", fmt.Errorf("skill script '%s' not found at %s", skill.Script, scriptPath)
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, scriptPath, args...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return string(output), fmt.Errorf("skill execution error: %w | output: %s", err, string(output))
+	}
+
+	return string(output), nil
+}

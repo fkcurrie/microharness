@@ -1,0 +1,14 @@
+# Binary output
+bin/
+*.exe
+*.dll
+
+# Databases & local configs
+*.db
+*.sock
+.config/
+
+# OS / IDE files
+.DS_Store
+.vscode/
+.idea/

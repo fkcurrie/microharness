@@ -1,0 +1,6 @@
+name: sys_health
+description: Inspects the local host system's CPU uptime, memory utilization, disk space, and failed systemd services.
+script: sys_health.sh
+parameters:
+  type: object
+  properties: {}
