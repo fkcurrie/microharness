@@ -66,8 +66,7 @@ func (c *OllamaClient) Generate(ctx context.Context, prompt string, history []Me
 		Stream:   false,
 		Options: map[string]interface{}{
 			"num_ctx":     2048,
-			"num_predict": 80,
-			"think":       false,
+			"num_predict": 256,
 		},
 	})
 	if err != nil {
@@ -95,11 +94,9 @@ func (c *OllamaClient) Generate(ctx context.Context, prompt string, history []Me
 		return "", err
 	}
 
+	// Always return actual response content
 	if res.Message.Content != "" {
 		return res.Message.Content, nil
-	}
-	if res.Message.Thinking != "" {
-		return res.Message.Thinking, nil
 	}
 
 	return "No response generated.", nil

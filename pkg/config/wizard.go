@@ -43,10 +43,10 @@ func AutoDiscover() (*Config, map[string]string) {
 	if err == nil && resp.StatusCode == 200 {
 		var tags OllamaTagsResponse
 		if err := json.NewDecoder(resp.Body).Decode(&tags); err == nil && len(tags.Models) > 0 {
-			// Pick the most responsive lightweight model (prefer 4b/e4b/8b for sub-2s latency over heavy 26b/31b)
+			// Pick the most responsive lightweight model (prefer non-reasoning models like gemma3:4b or gemma2)
 			bestModel := tags.Models[0].Name
 			for _, m := range tags.Models {
-				if strings.Contains(m.Name, "e4b") || strings.Contains(m.Name, "4b") || strings.Contains(m.Name, "8b") {
+				if strings.Contains(m.Name, "gemma3") || strings.Contains(m.Name, "gemma2") {
 					bestModel = m.Name
 					break
 				}
