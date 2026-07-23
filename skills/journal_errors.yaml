@@ -1,0 +1,9 @@
+name: journal_errors
+description: Fetches recent system error and warning logs from systemd journalctl.
+script: journal_errors.sh
+parameters:
+  type: object
+  properties:
+    since:
+      type: string
+      description: Time window to look back (e.g., 1h, 30m, 24h)

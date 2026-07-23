@@ -1,0 +1,9 @@
+name: disk_analyzer
+description: Analyzes disk usage and identifies the largest files and directories in a target directory (defaults to /var/log).
+script: disk_analyzer.sh
+parameters:
+  type: object
+  properties:
+    target_dir:
+      type: string
+      description: Target directory path to analyze (e.g., /var/log, /home, /var/lib/docker)

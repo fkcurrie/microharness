@@ -1,0 +1,6 @@
+name: top_processes
+description: Inspects top processes ordered by CPU and memory utilization.
+script: top_processes.sh
+parameters:
+  type: object
+  properties: {}

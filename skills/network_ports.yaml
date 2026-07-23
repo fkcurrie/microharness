@@ -1,0 +1,6 @@
+name: network_ports
+description: Lists active listening TCP and UDP ports and their associated processes.
+script: network_ports.sh
+parameters:
+  type: object
+  properties: {}
