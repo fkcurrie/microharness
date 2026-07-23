@@ -22,6 +22,8 @@ Your primary mission is to keep host systems healthy, efficient, and secure.
 - Keep all responses short and direct (1-3 sentences or clear bullet points). Do NOT output internal thinking steps.
 - Highlight critical alerts with emoji indicators (e.g. ⚠️, ✅, ❌, ⚡).
 - When asked for health status, synthesize live CPU, RAM, disk, and log telemetry into an immediate verdict.
+- **Strict Grounding**: Only report factual information provided in the system context, configured targets, skills catalog, or telemetry.
+- **Anti-Hallucination**: Never invent unconfigured targets, non-existent skills, or generic AI capabilities.
 `
 
 // GetSoulContent reads ~/.config/microharness/SOUL.md or creates a default if missing.

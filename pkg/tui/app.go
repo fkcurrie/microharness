@@ -199,12 +199,41 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				generateCmd := func() tea.Msg {
 					start := time.Now()
 					soul := config.GetSoulContent()
-					prompt := fmt.Sprintf("%s\n\nUser Query: %s", soul, input)
-					if strings.Contains(strings.ToLower(input), "health") || strings.Contains(strings.ToLower(input), "stats") {
-						if stats, err := sysinfo.GetStats(); err == nil {
-							prompt = fmt.Sprintf("%s\nContext: System Stats: %s\nUser Query: %s", soul, stats.Summary(), input)
+
+					var contextParts []string
+
+					// Configured Targets context
+					if len(m.cfg.Targets) > 0 {
+						var targetStrs []string
+						for _, t := range m.cfg.Targets {
+							if t.Type == "ssh" {
+								targetStrs = append(targetStrs, fmt.Sprintf("%s (ssh: %s@%s)", t.Name, t.User, t.Host))
+							} else {
+								targetStrs = append(targetStrs, fmt.Sprintf("%s (local host)", t.Name))
+							}
+						}
+						contextParts = append(contextParts, fmt.Sprintf("Monitored Target Systems: [%s]", strings.Join(targetStrs, ", ")))
+					}
+
+					// Installed Skills catalog context
+					if m.skillMgr != nil {
+						skList := m.skillMgr.ListSkills()
+						var skNames []string
+						for _, sk := range skList {
+							skNames = append(skNames, fmt.Sprintf("%s (%s)", sk.Name, sk.Description))
+						}
+						if len(skNames) > 0 {
+							contextParts = append(contextParts, fmt.Sprintf("Available Skills Catalog: [%s]", strings.Join(skNames, "; ")))
 						}
 					}
+
+					// Live Telemetry
+					if stats, err := sysinfo.GetStats(); err == nil {
+						contextParts = append(contextParts, fmt.Sprintf("Live System Telemetry: %s", stats.Summary()))
+					}
+
+					ctxBlock := strings.Join(contextParts, "\n")
+					prompt := fmt.Sprintf("%s\n\n=== REAL-TIME SYSTEM CONTEXT ===\n%s\n===============================\n\nUser Query: %s", soul, ctxBlock, input)
 
 					resp, err := m.llmClient.Generate(context.Background(), prompt, historySnapshot)
 					elapsed := time.Since(start)
