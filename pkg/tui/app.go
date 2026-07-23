@@ -111,7 +111,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				_ = m.dbStore.SaveMessage("user", input)
 			}
 
-			// Check for direct skill invocation or agent response
+			// Check for direct skill invocation or creation
 			if strings.HasPrefix(input, "run skill ") {
 				skillName := strings.TrimPrefix(input, "run skill ")
 				return m, func() tea.Msg {
@@ -120,6 +120,23 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						return fmt.Sprintf("Error executing skill %s: %v", skillName, err)
 					}
 					return fmt.Sprintf("Skill [%s] Output:\n%s", skillName, out)
+				}
+			}
+
+			if strings.HasPrefix(input, "create skill ") {
+				parts := strings.SplitN(strings.TrimPrefix(input, "create skill "), "|", 3)
+				if len(parts) >= 2 {
+					name := strings.TrimSpace(parts[0])
+					desc := strings.TrimSpace(parts[1])
+					script := "#!/usr/bin/env bash\necho 'Skill executed'"
+					if len(parts) == 3 {
+						script = strings.TrimSpace(parts[2])
+					}
+					_, err := m.skillMgr.CreateSkill(name, desc, script)
+					if err != nil {
+						return m, func() tea.Msg { return fmt.Sprintf("❌ Failed to create skill %s: %v", name, err) }
+					}
+					return m, func() tea.Msg { return fmt.Sprintf("✅ Created new skill '%s' and added to catalog!", name) }
 				}
 			}
 

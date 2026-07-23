@@ -89,3 +89,39 @@ func (m *Manager) Execute(ctx context.Context, name string, args []string) (stri
 
 	return string(output), nil
 }
+
+func (m *Manager) CreateSkill(name, description, scriptContent string) (*Skill, error) {
+	if err := os.MkdirAll(m.skillsDir, 0755); err != nil {
+		return nil, err
+	}
+
+	scriptName := fmt.Sprintf("%s.sh", name)
+	scriptPath := filepath.Join(m.skillsDir, scriptName)
+	if err := os.WriteFile(scriptPath, []byte(scriptContent), 0755); err != nil {
+		return nil, fmt.Errorf("failed to write skill script: %w", err)
+	}
+
+	skill := Skill{
+		Name:        name,
+		Description: description,
+		Script:      scriptName,
+		Parameters: map[string]interface{}{
+			"type":       "object",
+			"properties": map[string]interface{}{},
+		},
+		Dir: m.skillsDir,
+	}
+
+	yamlData, err := yaml.Marshal(skill)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal skill spec: %w", err)
+	}
+
+	yamlPath := filepath.Join(m.skillsDir, fmt.Sprintf("%s.yaml", name))
+	if err := os.WriteFile(yamlPath, yamlData, 0644); err != nil {
+		return nil, fmt.Errorf("failed to write skill yaml: %w", err)
+	}
+
+	m.skills[name] = &skill
+	return &skill, nil
+}
