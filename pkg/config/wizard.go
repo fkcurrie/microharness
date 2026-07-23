@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -49,6 +50,7 @@ func AutoDiscover() (*Config, map[string]string) {
 			if cfg.LLM.Gemini.APIKey == "" && cfg.LLM.Claude.APIKey == "" {
 				cfg.LLM.DefaultProvider = "ollama"
 				discovered["Active Brain Provider"] = fmt.Sprintf("Auto-selected local open model '%s' (Zero API keys required)", tags.Models[0].Name)
+				discovered["Model Latency Benchmark"] = BenchmarkAndTuneModel(cfg.LLM.Ollama.Endpoint, tags.Models[0].Name)
 			}
 		}
 		resp.Body.Close()
@@ -69,4 +71,30 @@ func AutoDiscover() (*Config, map[string]string) {
 	GetSoulContent()
 
 	return cfg, discovered
+}
+
+func BenchmarkAndTuneModel(endpoint, modelName string) string {
+	client := &http.Client{Timeout: 10 * time.Second}
+	reqBody := map[string]interface{}{
+		"model":  modelName,
+		"prompt": "Hi how are you?",
+		"stream": false,
+		"options": map[string]interface{}{
+			"num_ctx": 2048,
+		},
+	}
+	bodyData, _ := json.Marshal(reqBody)
+
+	start := time.Now()
+	resp, err := client.Post(endpoint+"/api/generate", "application/json", bytes.NewBuffer(bodyData))
+	if err != nil || resp.StatusCode != 200 {
+		return "⚠️ Benchmark Skipped (Server unresponsive)"
+	}
+	defer resp.Body.Close()
+	elapsed := time.Since(start)
+
+	if elapsed < 5*time.Second {
+		return fmt.Sprintf("⚡ OPTIMAL LATENCY: %v (< 5s target verified!)", elapsed.Round(time.Millisecond))
+	}
+	return fmt.Sprintf("⚠️ %v response time (Consider GPU pre-warming)", elapsed.Round(time.Millisecond))
 }
