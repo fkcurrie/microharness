@@ -15,13 +15,15 @@ import (
 )
 
 type BenchmarkCase struct {
-	Name      string
-	Prompt    string
-	MaxTarget time.Duration
+	Name              string
+	Prompt            string
+	MaxTarget         time.Duration
+	RequiredKeywords  []string
+	ForbiddenKeywords []string
 }
 
 func main() {
-	fmt.Println("🚀 Starting Automated Model Latency & Performance Regression Suite...")
+	fmt.Println("🚀 Starting Automated Model Latency & Correctness Eval Suite...")
 
 	home, _ := os.UserHomeDir()
 	configPath := filepath.Join(home, ".config", "microharness", "config.yaml")
@@ -40,34 +42,43 @@ func main() {
 
 	testCases := []BenchmarkCase{
 		{
-			Name:      "Greeting Latency",
-			Prompt:    "Hi how are you?",
-			MaxTarget: 5000 * time.Millisecond,
+			Name:              "Greeting Latency & Tone",
+			Prompt:            "Hi how are you?",
+			MaxTarget:         5000 * time.Millisecond,
+			ForbiddenKeywords: []string{"thinking", "as a large language model"},
 		},
 		{
-			Name:      "System Health Query",
-			Prompt:    "how is the system?",
-			MaxTarget: 5000 * time.Millisecond,
+			Name:              "System Health Query",
+			Prompt:            "how is the system?",
+			MaxTarget:         5000 * time.Millisecond,
+			RequiredKeywords:  []string{"load"},
+			ForbiddenKeywords: []string{"as an ai"},
 		},
 		{
-			Name:      "Monitored Systems Query",
-			Prompt:    "give the list of systems?",
-			MaxTarget: 5000 * time.Millisecond,
+			Name:              "Monitored Systems Query Grounding",
+			Prompt:            "give the list of systems?",
+			MaxTarget:         5000 * time.Millisecond,
+			RequiredKeywords:  []string{"local"},
+			ForbiddenKeywords: []string{"translation", "creative writing", "nlp"},
 		},
 		{
-			Name:      "Skills Catalog Query",
-			Prompt:    "what skills are installed?",
-			MaxTarget: 5000 * time.Millisecond,
+			Name:              "Skills Catalog Query Grounding",
+			Prompt:            "what skills are installed?",
+			MaxTarget:         5000 * time.Millisecond,
+			RequiredKeywords:  []string{"sys_health"},
+			ForbiddenKeywords: []string{"translation", "creative writing", "pattern recognition"},
 		},
 		{
-			Name:      "System Status Query",
-			Prompt:    "Check system load and memory status",
-			MaxTarget: 5000 * time.Millisecond,
+			Name:              "System Status Query",
+			Prompt:            "Check system load and memory status",
+			MaxTarget:         5000 * time.Millisecond,
+			RequiredKeywords:  []string{"load"},
 		},
 		{
-			Name:      "Short Summary Query",
-			Prompt:    "Summarize your primary role in one sentence",
-			MaxTarget: 5000 * time.Millisecond,
+			Name:              "Short Summary Query Conciseness",
+			Prompt:            "Summarize your primary role in one sentence",
+			MaxTarget:         5000 * time.Millisecond,
+			ForbiddenKeywords: []string{"thinking", "first,"},
 		},
 	}
 
@@ -105,7 +116,7 @@ func main() {
 	ctxBlock := fmt.Sprintf("Monitored Target Systems: [%s]\nAvailable Skills Catalog: [%s]\nLive System Telemetry: %s",
 		strings.Join(targetStrs, ", "), skillsCatalog, telemetry)
 
-	failed := false
+	suiteFailed := false
 
 	for i, tc := range testCases {
 		fmt.Printf("\n[Test %d/%d] %s...\n", i+1, len(testCases), tc.Name)
@@ -119,27 +130,51 @@ func main() {
 
 		if err != nil {
 			fmt.Printf("  ❌ ERROR: LLM invocation failed: %v\n", err)
-			failed = true
+			suiteFailed = true
 			continue
 		}
 
-		fmt.Printf("  • Response: %q\n", truncateResp(resp, 70))
+		fmt.Printf("  • Response: %q\n", truncateResp(resp, 75))
 		fmt.Printf("  • Actual Latency: %v\n", elapsed.Round(time.Millisecond))
 
+		caseFailed := false
+		respLower := strings.ToLower(resp)
+
+		// 1. Latency check
 		if elapsed > tc.MaxTarget {
-			fmt.Printf("  ❌ REGRESSION DETECTED: Response took %v (Exceeded threshold of %v)\n", elapsed.Round(time.Millisecond), tc.MaxTarget)
-			failed = true
+			fmt.Printf("  ❌ LATENCY FAIL: Response took %v (Exceeded threshold of %v)\n", elapsed.Round(time.Millisecond), tc.MaxTarget)
+			caseFailed = true
+		}
+
+		// 2. Required Grounding Keywords check
+		for _, req := range tc.RequiredKeywords {
+			if !strings.Contains(respLower, strings.ToLower(req)) {
+				fmt.Printf("  ❌ CORRECTNESS EVAL FAIL: Output missing required keyword %q\n", req)
+				caseFailed = true
+			}
+		}
+
+		// 3. Anti-Hallucination Forbidden Keywords check
+		for _, forb := range tc.ForbiddenKeywords {
+			if strings.Contains(respLower, strings.ToLower(forb)) {
+				fmt.Printf("  ❌ FACTUALITY EVAL FAIL: Output contains forbidden/hallucinated keyword %q\n", forb)
+				caseFailed = true
+			}
+		}
+
+		if caseFailed {
+			suiteFailed = true
 		} else {
-			fmt.Printf("  ✅ PASSED: Response latency within acceptable bounds (%v < %v)\n", elapsed.Round(time.Millisecond), tc.MaxTarget)
+			fmt.Printf("  ✅ PASSED: Latency (%v < %v) & Correctness Evals Satisfied!\n", elapsed.Round(time.Millisecond), tc.MaxTarget)
 		}
 	}
 
 	fmt.Println("\n" + "───────────────────────────────────────────────────────")
-	if failed {
-		fmt.Println("❌ LATENCY REGRESSION SUITE FAILED!")
+	if suiteFailed {
+		fmt.Println("❌ MODEL LATENCY & CORRECTNESS EVAL SUITE FAILED!")
 		os.Exit(1)
 	} else {
-		fmt.Println("✅ ALL MODEL LATENCY & PERFORMANCE TESTS PASSED!")
+		fmt.Println("✅ ALL MODEL LATENCY & CORRECTNESS EVALS PASSED!")
 	}
 }
 
