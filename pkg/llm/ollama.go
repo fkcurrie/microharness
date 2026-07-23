@@ -60,7 +60,7 @@ func (c *OllamaClient) Generate(ctx context.Context, prompt string, history []Me
 		Stream:   false,
 		Options: map[string]interface{}{
 			"num_ctx":     2048,
-			"num_predict": 100,
+			"num_predict": 60,
 		},
 	})
 	if err != nil {

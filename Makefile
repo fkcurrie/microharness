@@ -25,3 +25,8 @@ run: build
 
 clean:
 	rm -rf $(BUILD_DIR)
+
+bench: build
+	@echo "Running Model Latency Regression Suite..."
+	@go run ./cmd/bench
+
