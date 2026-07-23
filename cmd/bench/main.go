@@ -42,6 +42,11 @@ func main() {
 			MaxTarget: 5000 * time.Millisecond,
 		},
 		{
+			Name:      "System Health Query",
+			Prompt:    "how is the system?",
+			MaxTarget: 5000 * time.Millisecond,
+		},
+		{
 			Name:      "System Status Query",
 			Prompt:    "Check system load and memory status",
 			MaxTarget: 5000 * time.Millisecond,
