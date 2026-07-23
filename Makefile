@@ -30,3 +30,10 @@ bench: build
 	@echo "Running Model Latency Regression Suite..."
 	@go run ./cmd/bench
 
+setup-hooks:
+	@mkdir -p .git/hooks
+	@echo '#!/usr/bin/env bash\nset -e\n\necho "🔍 Running pre-commit model latency regression benchmark..."\nmake bench' > .git/hooks/pre-commit
+	@chmod +x .git/hooks/pre-commit
+	@echo "✅ Pre-commit latency regression hook installed successfully!"
+
+
