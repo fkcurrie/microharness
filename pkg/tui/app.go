@@ -20,6 +20,22 @@ import (
 
 type errMsg error
 
+type LLMStats struct {
+	TotalRequests    int
+	TotalTokens      int
+	LastPromptTokens int
+	LastEvalTokens   int
+	LastLatency      time.Duration
+}
+
+type llmResponseMsg struct {
+	content      string
+	promptTokens int
+	evalTokens   int
+	latency      time.Duration
+	err          error
+}
+
 type model struct {
 	cfg        *config.Config
 	llmClient  llm.Client
@@ -31,6 +47,7 @@ type model struct {
 	history    []llm.Message
 	sysStats   *sysinfo.SystemStats
 	recentLogs []store.JobLog
+	llmStats   LLMStats
 	width      int
 	height     int
 	loading    bool
@@ -149,6 +166,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.llmClient != nil {
 				m.loading = true
 				return m, func() tea.Msg {
+					start := time.Now()
 					prompt := input
 					if strings.Contains(strings.ToLower(input), "health") || strings.Contains(strings.ToLower(input), "stats") {
 						if stats, err := sysinfo.GetStats(); err == nil {
@@ -157,13 +175,51 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 
 					resp, err := m.llmClient.Generate(context.Background(), prompt, m.history)
+					elapsed := time.Since(start)
 					if err != nil {
-						return fmt.Sprintf("Agent Error: %v", err)
+						return llmResponseMsg{err: err}
 					}
-					return resp
+
+					promptTokens := len(prompt) / 4
+					if promptTokens < 1 {
+						promptTokens = 1
+					}
+					evalTokens := len(resp) / 4
+					if evalTokens < 1 {
+						evalTokens = 1
+					}
+
+					return llmResponseMsg{
+						content:      resp,
+						promptTokens: promptTokens,
+						evalTokens:   evalTokens,
+						latency:      elapsed,
+					}
 				}
 			}
 
+		}
+
+	case llmResponseMsg:
+		m.loading = false
+		if msg.err != nil {
+			msgStr := fmt.Sprintf("Agent Error: %v", msg.err)
+			m.history = append(m.history, llm.Message{Role: "assistant", Content: msgStr})
+			m.renderViewport()
+			return m, nil
+		}
+
+		m.llmStats.TotalRequests++
+		m.llmStats.LastLatency = msg.latency
+		m.llmStats.LastPromptTokens = msg.promptTokens
+		m.llmStats.LastEvalTokens = msg.evalTokens
+		m.llmStats.TotalTokens += (msg.promptTokens + msg.evalTokens)
+
+		m.history = append(m.history, llm.Message{Role: "assistant", Content: msg.content})
+		m.renderViewport()
+
+		if m.dbStore != nil {
+			_ = m.dbStore.SaveMessage("assistant", msg.content)
 		}
 
 	case string:
@@ -214,13 +270,32 @@ func (m model) View() string {
 	)
 	leftPane := boxStyle.Render(chatView)
 
-	// Right Pane (System Stats & Job History)
+	// Right Pane (System Stats, Model Access Stats & Job History)
 	statsInfo := fmt.Sprintf(
 		"OS: %s/%s\nCPUs: %d | Load: %.2f\nRAM: %dMB / %dMB\nDisk Free: %d GB\n",
 		m.sysStats.OS, m.sysStats.Arch,
 		m.sysStats.CPUCount, m.sysStats.LoadAvg1,
 		m.sysStats.MemUsedMB, m.sysStats.MemTotalMB,
 		m.sysStats.DiskFree/(1024*1024*1024),
+	)
+
+	activeModel := m.cfg.LLM.Gemini.Model
+	if m.cfg.LLM.DefaultProvider == "claude" {
+		activeModel = m.cfg.LLM.Claude.Model
+	} else if m.cfg.LLM.DefaultProvider == "ollama" {
+		activeModel = m.cfg.LLM.Ollama.Model
+	} else if m.cfg.LLM.DefaultProvider == "litellm" {
+		activeModel = m.cfg.LLM.LiteLLM.Model
+	}
+
+	modelStatsInfo := fmt.Sprintf(
+		"Active Model: %s\nTotal Requests: %d\nLast Latency: %v\nLast Prompt: ~%d tokens\nLast Output: ~%d tokens\nTotal Tokens: ~%d tokens\n",
+		activeModel,
+		m.llmStats.TotalRequests,
+		m.llmStats.LastLatency.Round(time.Millisecond),
+		m.llmStats.LastPromptTokens,
+		m.llmStats.LastEvalTokens,
+		m.llmStats.TotalTokens,
 	)
 
 	var logLines []string
@@ -235,6 +310,8 @@ func (m model) View() string {
 		lipgloss.Left,
 		titleStyle.Render("── System Monitor ──"),
 		statsInfo,
+		"\n"+titleStyle.Render("── Model Access Stats ──"),
+		modelStatsInfo,
 		"\n"+titleStyle.Render("── Recent Jobs ──"),
 		strings.Join(logLines, "\n"),
 		"\n"+titleStyle.Render("── Loaded Skills ──"),
