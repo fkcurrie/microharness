@@ -52,7 +52,9 @@ func (c *LiteLLMClient) Generate(ctx context.Context, prompt string, history []M
 	for _, h := range history {
 		reqMsgs = append(reqMsgs, openAIMessage{Role: h.Role, Content: h.Content})
 	}
-	reqMsgs = append(reqMsgs, openAIMessage{Role: "user", Content: prompt})
+	if len(history) == 0 || history[len(history)-1].Content != prompt {
+		reqMsgs = append(reqMsgs, openAIMessage{Role: "user", Content: prompt})
+	}
 
 	bodyData, err := json.Marshal(openAIChatReq{
 		Model:    c.model,

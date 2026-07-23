@@ -49,7 +49,9 @@ func (c *OllamaClient) Generate(ctx context.Context, prompt string, history []Me
 	for _, h := range history {
 		reqMsgs = append(reqMsgs, ollamaMessage{Role: h.Role, Content: h.Content})
 	}
-	reqMsgs = append(reqMsgs, ollamaMessage{Role: "user", Content: prompt})
+	if len(history) == 0 || history[len(history)-1].Content != prompt {
+		reqMsgs = append(reqMsgs, ollamaMessage{Role: "user", Content: prompt})
+	}
 
 	bodyData, err := json.Marshal(ollamaChatRequest{
 		Model:    c.model,

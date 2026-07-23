@@ -50,7 +50,9 @@ func (c *ClaudeClient) Generate(ctx context.Context, prompt string, history []Me
 			msgs = append(msgs, claudeMsg{Role: h.Role, Content: h.Content})
 		}
 	}
-	msgs = append(msgs, claudeMsg{Role: "user", Content: prompt})
+	if len(history) == 0 || history[len(history)-1].Content != prompt {
+		msgs = append(msgs, claudeMsg{Role: "user", Content: prompt})
+	}
 
 	bodyData, err := json.Marshal(claudeReq{
 		Model:     c.model,

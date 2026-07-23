@@ -59,10 +59,12 @@ func (c *GeminiClient) Generate(ctx context.Context, prompt string, history []Me
 			Parts: []geminiPart{{Text: h.Content}},
 		})
 	}
-	contents = append(contents, geminiContent{
-		Role:  "user",
-		Parts: []geminiPart{{Text: prompt}},
-	})
+	if len(history) == 0 || history[len(history)-1].Content != prompt {
+		contents = append(contents, geminiContent{
+			Role:  "user",
+			Parts: []geminiPart{{Text: prompt}},
+		})
+	}
 
 	bodyData, err := json.Marshal(geminiReq{Contents: contents})
 	if err != nil {

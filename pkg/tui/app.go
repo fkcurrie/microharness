@@ -109,10 +109,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			// Add to viewport history
 			m.history = append(m.history, llm.Message{Role: "user", Content: input})
-			content := m.viewport.View() + fmt.Sprintf("\n\x1b[1;36mYou:\x1b[0m %s\n", input)
-			m.viewport.SetContent(content)
+			m.renderViewport()
 			m.textarea.Reset()
-			m.viewport.GotoBottom()
 
 			if m.dbStore != nil {
 				_ = m.dbStore.SaveMessage("user", input)
@@ -171,9 +169,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case string:
 		m.loading = false
 		m.history = append(m.history, llm.Message{Role: "assistant", Content: msg})
-		content := m.viewport.View() + fmt.Sprintf("\n\x1b[1;32mAgent (%s):\x1b[0m %s\n", m.cfg.LLM.DefaultProvider, msg)
-		m.viewport.SetContent(content)
-		m.viewport.GotoBottom()
+		m.renderViewport()
 
 		if m.dbStore != nil {
 			_ = m.dbStore.SaveMessage("assistant", msg)
@@ -256,4 +252,17 @@ func (m model) View() string {
 	footer := fmt.Sprintf("\n[Enter] Send Message  │  [Esc] Quit  │  Time: %s", time.Now().Format("15:04:05"))
 
 	return lipgloss.JoinVertical(lipgloss.Left, header, mainView, footer)
+}
+
+func (m *model) renderViewport() {
+	var sb strings.Builder
+	for _, msg := range m.history {
+		if msg.Role == "user" {
+			sb.WriteString(fmt.Sprintf("\x1b[1;36mYou:\x1b[0m %s\n\n", msg.Content))
+		} else {
+			sb.WriteString(fmt.Sprintf("\x1b[1;32mAgent (%s):\x1b[0m %s\n\n", m.cfg.LLM.DefaultProvider, msg.Content))
+		}
+	}
+	m.viewport.SetContent(sb.String())
+	m.viewport.GotoBottom()
 }
