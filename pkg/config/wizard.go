@@ -65,5 +65,8 @@ func AutoDiscover() (*Config, map[string]string) {
 		}
 	}
 
+	// 5. Ensure SOUL.md existence
+	GetSoulContent()
+
 	return cfg, discovered
 }
