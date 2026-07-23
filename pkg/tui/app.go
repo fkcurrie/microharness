@@ -182,10 +182,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 				generateCmd := func() tea.Msg {
 					start := time.Now()
-					prompt := input
+					systemDirective := "Instructions: Be short, direct, and snappy. Provide only the essential information without fluff or unnecessary preamble."
+					prompt := fmt.Sprintf("%s\n\nUser Query: %s", systemDirective, input)
 					if strings.Contains(strings.ToLower(input), "health") || strings.Contains(strings.ToLower(input), "stats") {
 						if stats, err := sysinfo.GetStats(); err == nil {
-							prompt = fmt.Sprintf("Context: System Stats: %s\nUser query: %s", stats.Summary(), input)
+							prompt = fmt.Sprintf("%s\nContext: System Stats: %s\nUser Query: %s", systemDirective, stats.Summary(), input)
 						}
 					}
 
