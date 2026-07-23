@@ -70,15 +70,15 @@ func DefaultConfig() *Config {
 			DefaultProvider: "gemini",
 			Gemini: GeminiConfig{
 				APIKey: os.Getenv("GEMINI_API_KEY"),
-				Model:  "gemini-2.5-flash",
+				Model:  "gemini-3.5-flash",
 			},
 			Claude: ClaudeConfig{
 				APIKey: os.Getenv("ANTHROPIC_API_KEY"),
-				Model:  "claude-3-5-sonnet-latest",
+				Model:  "claude-sonnet-5",
 			},
 			Ollama: OllamaConfig{
 				Endpoint: "http://127.0.0.1:11434",
-				Model:    "gemma2:2b",
+				Model:    "gemma4:e2b",
 			},
 		},
 		Targets: []TargetConfig{
