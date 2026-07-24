@@ -446,7 +446,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.renderViewport()
 
 				return m, func() tea.Msg {
-					discovered, err := sysinfo.DiscoverNetworkTargets(context.Background(), "root")
+					discovered, err := sysinfo.DiscoverNetworkTargets(context.Background(), sysinfo.GetDefaultSSHUser())
 					if err != nil {
 						return fmt.Sprintf("❌ Discovery error: %v", err)
 					}
