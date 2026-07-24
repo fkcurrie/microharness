@@ -144,9 +144,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		m.textarea.SetWidth(m.width - 4)
 
-		vpHeight := m.height - 13
-		if vpHeight < 6 {
-			vpHeight = 6
+		vpHeight := m.height - 16
+		if vpHeight < 4 {
+			vpHeight = 4
 		}
 		m.viewport.Width = m.width - 4
 		m.viewport.Height = vpHeight
@@ -921,7 +921,10 @@ func (m model) View() string {
 	)
 
 	var logLines []string
-	for _, l := range m.recentLogs {
+	for i, l := range m.recentLogs {
+		if i >= 2 {
+			break
+		}
 		logLines = append(logLines, fmt.Sprintf("[%s] %s -> %s", l.ExecutedAt.Format("15:04"), l.JobName, l.Status))
 	}
 	if len(logLines) == 0 {
@@ -946,7 +949,7 @@ func (m model) View() string {
 	bottomView := lipgloss.JoinHorizontal(lipgloss.Top, col1, col2, col3)
 	bottomPane := boxStyle.Width(topWidth).Render(bottomView)
 
-	footer := fmt.Sprintf("\n[Enter] Send  │  [! <cmd>] Shell  │  [/help] Commands  │  [Esc] Quit  │  Time: %s", time.Now().Format("15:04:05"))
+	footer := fmt.Sprintf("[Enter] Send  │  [! <cmd>] Shell  │  [/help] Commands  │  [Esc] Quit  │  Time: %s", time.Now().Format("15:04:05"))
 
 	return lipgloss.JoinVertical(lipgloss.Left, header, topPane, bottomPane, footer)
 }
