@@ -144,7 +144,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		m.textarea.SetWidth(m.width - 4)
 
-		vpHeight := m.height - 16
+		vpHeight := m.height - 18
 		if vpHeight < 4 {
 			vpHeight = 4
 		}
@@ -896,18 +896,30 @@ func (m model) View() string {
 	}
 	topPane := boxStyle.Width(topWidth).Render(chatView)
 
+	// Refresh live system stats for HUD
+	if liveStats, err := sysinfo.GetStats(); err == nil && liveStats != nil {
+		m.sysStats = liveStats
+	}
+
 	// Bottom Pane: Full-width System Monitor & Telemetry HUD (3 Horizontal Columns)
 	gpuDetails := "GPU: N/A"
-	if m.sysStats.GPU != nil && m.sysStats.GPU.Name != "" {
+	if m.sysStats != nil && m.sysStats.GPU != nil && m.sysStats.GPU.Name != "" {
+		shortGPU := m.sysStats.GPU.Name
+		if idx := strings.Index(shortGPU, "] "); idx != -1 {
+			shortGPU = shortGPU[idx+2:]
+		}
+		if len(shortGPU) > 18 {
+			shortGPU = shortGPU[:18]
+		}
 		if m.sysStats.GPU.VRAMTotalMB > 0 {
-			gpuDetails = fmt.Sprintf("GPU: %s (%d%% util │ VRAM %dMB/%dMB)", m.sysStats.GPU.Name, m.sysStats.GPU.UtilPct, m.sysStats.GPU.VRAMUsedMB, m.sysStats.GPU.VRAMTotalMB)
+			gpuDetails = fmt.Sprintf("GPU: %s (%d%% │ %dMB/%dMB)", shortGPU, m.sysStats.GPU.UtilPct, m.sysStats.GPU.VRAMUsedMB, m.sysStats.GPU.VRAMTotalMB)
 		} else {
-			gpuDetails = fmt.Sprintf("GPU: %s (%d%% util)", m.sysStats.GPU.Name, m.sysStats.GPU.UtilPct)
+			gpuDetails = fmt.Sprintf("GPU: %s (%d%% util)", shortGPU, m.sysStats.GPU.UtilPct)
 		}
 	}
 
 	statsInfo := fmt.Sprintf(
-		"OS: %s/%s │ CPUs: %d\nLoad: %.2f │ Focus: %s\nRAM: %dMB / %dMB │ Disk: %d GB\n%s",
+		"OS: %s/%s │ CPUs: %d\nLoad: %.2f │ Focus: %s\nRAM: %dMB/%dMB │ Disk: %dGB\n%s",
 		m.sysStats.OS, m.sysStats.Arch, m.sysStats.CPUCount,
 		m.sysStats.LoadAvg1, m.activeTarget,
 		m.sysStats.MemUsedMB, m.sysStats.MemTotalMB,
