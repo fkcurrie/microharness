@@ -184,12 +184,49 @@ func DiscoverNetworkTargets(ctx context.Context, defaultUser string) ([]Discover
 		}
 	}
 
-	// 6. Concurrently scan port 22 across all gathered candidates (300ms dial timeout, 200 workers)
+	// 6. Run fast Nmap discovery if nmap binary is available
+	if nmapPath, err := exec.LookPath("nmap"); err == nil && nmapPath != "" {
+		// Discover active interfaces subnets to scan
+		var subnets []string
+		if ifaces, err := net.Interfaces(); err == nil {
+			for _, iface := range ifaces {
+				if iface.Flags&net.FlagLoopback != 0 || iface.Flags&net.FlagUp == 0 {
+					continue
+				}
+				if addrs, err := iface.Addrs(); err == nil {
+					for _, addr := range addrs {
+						if ipNet, ok := addr.(*net.IPNet); ok && !ipNet.IP.IsLoopback() && ipNet.IP.To4() != nil {
+							subnets = append(subnets, ipNet.String())
+						}
+					}
+				}
+			}
+		}
+
+		for _, sub := range subnets {
+			nmapArgs := []string{"-p", "22", "--open", "-T4", "-n", "--min-rate", "400", sub}
+			if nmapOut, err := exec.CommandContext(ctx, nmapPath, nmapArgs...).CombinedOutput(); err == nil {
+				lines := strings.Split(string(nmapOut), "\n")
+				for _, line := range lines {
+					if strings.HasPrefix(line, "Nmap scan report for ") {
+						targetIP := strings.TrimSpace(strings.TrimPrefix(line, "Nmap scan report for "))
+						if net.ParseIP(targetIP) != nil {
+							if _, exists := candMap[targetIP]; !exists {
+								candMap[targetIP] = "nmap-scan"
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// 7. Concurrently scan port 22 across all gathered candidates (1500ms dial timeout for WiFi latency tolerance, 250 workers)
 	var (
 		mu      sync.Mutex
 		results []DiscoveredHost
 		wg      sync.WaitGroup
-		sem     = make(chan struct{}, 200)
+		sem     = make(chan struct{}, 250)
 	)
 
 	for ip, devName := range candMap {
@@ -199,7 +236,7 @@ func DiscoverNetworkTargets(ctx context.Context, defaultUser string) ([]Discover
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
-			dialer := net.Dialer{Timeout: 300 * time.Millisecond}
+			dialer := net.Dialer{Timeout: 1500 * time.Millisecond}
 			conn, err := dialer.DialContext(ctx, "tcp", fmt.Sprintf("%s:22", targetIP))
 			if err != nil {
 				return
@@ -216,7 +253,7 @@ func DiscoverNetworkTargets(ctx context.Context, defaultUser string) ([]Discover
 			// Test passwordless SSH with defaultUser (workstation user e.g. fcurrie)
 			sshCmd := exec.CommandContext(ctx, "ssh",
 				"-o", "BatchMode=yes",
-				"-o", "ConnectTimeout=2",
+				"-o", "ConnectTimeout=3",
 				"-o", "StrictHostKeyChecking=accept-new",
 				fmt.Sprintf("%s@%s", defaultUser, targetIP),
 				"hostname",
@@ -230,7 +267,7 @@ func DiscoverNetworkTargets(ctx context.Context, defaultUser string) ([]Discover
 				if defaultUser != "root" {
 					sshCmd2 := exec.CommandContext(ctx, "ssh",
 						"-o", "BatchMode=yes",
-						"-o", "ConnectTimeout=2",
+						"-o", "ConnectTimeout=3",
 						"-o", "StrictHostKeyChecking=accept-new",
 						fmt.Sprintf("root@%s", targetIP),
 						"hostname",
