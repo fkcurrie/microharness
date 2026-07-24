@@ -897,12 +897,22 @@ func (m model) View() string {
 	topPane := boxStyle.Width(topWidth).Render(chatView)
 
 	// Bottom Pane: Full-width System Monitor & Telemetry HUD (3 Horizontal Columns)
+	gpuDetails := "GPU: N/A"
+	if m.sysStats.GPU != nil && m.sysStats.GPU.Name != "" {
+		if m.sysStats.GPU.VRAMTotalMB > 0 {
+			gpuDetails = fmt.Sprintf("GPU: %s (%d%% util │ VRAM %dMB/%dMB)", m.sysStats.GPU.Name, m.sysStats.GPU.UtilPct, m.sysStats.GPU.VRAMUsedMB, m.sysStats.GPU.VRAMTotalMB)
+		} else {
+			gpuDetails = fmt.Sprintf("GPU: %s (%d%% util)", m.sysStats.GPU.Name, m.sysStats.GPU.UtilPct)
+		}
+	}
+
 	statsInfo := fmt.Sprintf(
-		"OS: %s/%s │ CPUs: %d\nLoad: %.2f │ Focus: %s\nRAM: %dMB / %dMB\nDisk Free: %d GB",
+		"OS: %s/%s │ CPUs: %d\nLoad: %.2f │ Focus: %s\nRAM: %dMB / %dMB │ Disk: %d GB\n%s",
 		m.sysStats.OS, m.sysStats.Arch, m.sysStats.CPUCount,
 		m.sysStats.LoadAvg1, m.activeTarget,
 		m.sysStats.MemUsedMB, m.sysStats.MemTotalMB,
 		m.sysStats.DiskFree/(1024*1024*1024),
+		gpuDetails,
 	)
 
 	activeModel := m.cfg.LLM.Gemini.Model
