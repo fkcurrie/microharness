@@ -957,9 +957,14 @@ func (m model) View() string {
 		logLines = append(logLines, "No recent job runs.")
 	}
 
+	numSkills := 0
+	if m.skillMgr != nil {
+		numSkills = len(m.skillMgr.ListSkills())
+	}
+
 	jobsAndSkillsInfo := fmt.Sprintf(
 		"Skills: %d loaded\nRecent Jobs:\n%s",
-		len(m.skillMgr.ListSkills()),
+		numSkills,
 		strings.Join(logLines, "\n"),
 	)
 

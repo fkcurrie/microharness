@@ -12,6 +12,7 @@ import (
 	"microharness/pkg/llm"
 	"microharness/pkg/skills"
 	"microharness/pkg/sysinfo"
+	"microharness/pkg/tui"
 )
 
 type BenchmarkCase struct {
@@ -39,6 +40,16 @@ func main() {
 		fmt.Printf("❌ Failed to initialize LLM client: %v\n", err)
 		os.Exit(1)
 	}
+
+	// 0. Pre-Flight check: Validate TUI Render Engine & GPU Telemetry
+	fmt.Println("\n🖥️  [TUI Pre-Flight] Validating TUI Render Engine & GPU Telemetry HUD...")
+	tuiModel := tui.NewModel(cfg, nil, nil, nil)
+	tuiRendered := tuiModel.View()
+	if !strings.Contains(tuiRendered, "GPU:") {
+		fmt.Printf("❌ TUI RENDER FAIL: Rendered System Monitor HUD missing 'GPU:' telemetry line!\n")
+		os.Exit(1)
+	}
+	fmt.Println("  ✅ PASSED: TUI Render Engine contains active 'GPU:' telemetry component.")
 
 	testCases := []BenchmarkCase{
 		{

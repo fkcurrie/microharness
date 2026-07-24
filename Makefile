@@ -11,7 +11,7 @@ build:
 
 install: build
 	@mkdir -p $(INSTALL_PATH)
-	cp $(BUILD_DIR)/$(BINARY_NAME) $(INSTALL_PATH)/$(BINARY_NAME)
+	@cp $(BUILD_DIR)/$(BINARY_NAME) $(INSTALL_PATH)/$(BINARY_NAME).tmp && mv -f $(INSTALL_PATH)/$(BINARY_NAME).tmp $(INSTALL_PATH)/$(BINARY_NAME)
 	@echo "Installed $(BINARY_NAME) to $(INSTALL_PATH)/$(BINARY_NAME)"
 
 init: build
