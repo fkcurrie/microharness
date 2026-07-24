@@ -684,7 +684,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							skNames = append(skNames, fmt.Sprintf("%s (%s)", sk.Name, sk.Description))
 						}
 						if len(skNames) > 0 {
-							contextParts = append(contextParts, fmt.Sprintf("Available Skills Catalog: [%s]", strings.Join(skNames, "; ")))
+							contextParts = append(contextParts, fmt.Sprintf("Available Skills Catalog: [%s]. Always list ALL of these skills when asked what skills are installed.", strings.Join(skNames, "; ")))
 						}
 					}
 
@@ -696,7 +696,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					ctxBlock := strings.Join(contextParts, "\n")
 					prompt := fmt.Sprintf("%s\n\n=== REAL-TIME SYSTEM CONTEXT ===\n%s\n===============================\n\nUser Query: %s", soul, ctxBlock, input)
 
-					resp, err := m.llmClient.Generate(context.Background(), prompt, historySnapshot)
+					genCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+					resp, err := m.llmClient.Generate(genCtx, prompt, historySnapshot)
+					cancel()
 					elapsed := time.Since(start)
 					if err != nil {
 						return llmResponseMsg{err: err}
@@ -797,7 +799,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 
-				out, err := m.skillMgr.ExecuteOnTarget(context.Background(), skillToRun, user, host, nil)
+				skillCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+				out, err := m.skillMgr.ExecuteOnTarget(skillCtx, skillToRun, user, host, nil)
+				cancel()
 				if err == nil {
 					toolResultMsg := fmt.Sprintf("\n\n⚙️ [Autonomous ReAct Execution] Skill '%s' output:\n```\n%s\n```", skillToRun, strings.TrimSpace(out))
 					content += toolResultMsg

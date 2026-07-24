@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"microharness/pkg/sysinfo"
 )
 
 type Skill struct {
@@ -107,8 +109,8 @@ func (m *Manager) ExecuteOnTarget(ctx context.Context, name string, user, host s
 		return "", fmt.Errorf("failed to read skill script at %s: %w", scriptPath, err)
 	}
 
-	if user == "" {
-		user = "root"
+	if user == "" || user == "root" {
+		user = sysinfo.GetDefaultSSHUser()
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
