@@ -405,17 +405,65 @@ func ProbeAllTargets(ctx context.Context, targets []TargetInput, activeTarget st
 	return results
 }
 
-func FormatTargetsTable(telemetryList []TargetTelemetry) string {
+func FormatTargetsTable(telemetryList []TargetTelemetry, termWidth int) string {
 	var sb strings.Builder
 	sb.WriteString("🖥️ Monitored Target Systems & Remote Telemetry:\n\n")
 
+	if termWidth <= 0 {
+		termWidth = 100
+	}
+
+	// Account for TUI viewport margin
+	effectiveWidth := termWidth - 4
+	if effectiveWidth < 60 {
+		effectiveWidth = 60
+	}
+
 	headers := []string{"TARGET / IP", "HOSTNAME", "OS RELEASE", "KERNEL", "SSH USER", "STATUS"}
-	widths := []int{15, 18, 22, 22, 10, 14}
+
+	// Border & padding overhead: 7 vertical bars (│) + 12 spaces = 19 chars
+	overhead := 19
+	avail := effectiveWidth - overhead
+	if avail < 41 {
+		avail = 41
+	}
+
+	// Proportional column distribution: TARGET 18%, HOSTNAME 18%, OS 25%, KERNEL 21%, USER 8%, STATUS 10%
+	wTarget := (avail * 18) / 100
+	wHost := (avail * 18) / 100
+	wOS := (avail * 25) / 100
+	wKernel := (avail * 21) / 100
+	wUser := (avail * 8) / 100
+	wStatus := avail - (wTarget + wHost + wOS + wKernel + wUser)
+
+	if wTarget < 11 {
+		wTarget = 11
+	}
+	if wHost < 10 {
+		wHost = 10
+	}
+	if wOS < 12 {
+		wOS = 12
+	}
+	if wKernel < 12 {
+		wKernel = 12
+	}
+	if wUser < 8 {
+		wUser = 8
+	}
+	if wStatus < 10 {
+		wStatus = 10
+	}
+
+	widths := []int{wTarget, wHost, wOS, wKernel, wUser, wStatus}
 
 	pad := func(s string, w int) string {
 		runes := []rune(s)
 		if len(runes) > w {
-			return string(runes[:w-1]) + "…"
+			if w > 1 {
+				return string(runes[:w-1]) + "…"
+			}
+			return string(runes[:w])
 		}
 		return s + strings.Repeat(" ", w-len(runes))
 	}

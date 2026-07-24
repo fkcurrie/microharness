@@ -509,7 +509,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 
 					telemetryList := sysinfo.ProbeAllTargets(ctx, inputs, m.activeTarget)
-					return sysinfo.FormatTargetsTable(telemetryList)
+					return sysinfo.FormatTargetsTable(telemetryList, m.width)
 				}
 			}
 
@@ -656,7 +656,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						User: user,
 					}
 					telemetry := sysinfo.ProbeTargetTelemetry(ctx, tInput, m.activeTarget)
-					table := sysinfo.FormatTargetsTable([]sysinfo.TargetTelemetry{telemetry})
+					table := sysinfo.FormatTargetsTable([]sysinfo.TargetTelemetry{telemetry}, m.width)
 
 					return fmt.Sprintf("✅ Target '%s' connected & initialized in config.yaml!\n\n%s", name, table)
 				}
