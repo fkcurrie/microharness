@@ -267,13 +267,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 			// 2. Context Attachment: /add <filepath> or /log <service>
-			if strings.HasPrefix(cmdLower, "/add ") || strings.HasPrefix(cmdLower, "/file ") {
+			if strings.HasPrefix(cmdLower, "/add ") || strings.HasPrefix(cmdLower, "/file ") || cmdLower == "/add" || cmdLower == "/file" {
 				filePath := strings.TrimSpace(input[4:])
 				if strings.HasPrefix(cmdLower, "/file ") {
 					filePath = strings.TrimSpace(input[6:])
 				}
 				if filePath == "" {
 					return m, func() tea.Msg { return "⚠️ Usage: `/add <filepath>` (e.g., `/add /var/log/syslog`)" }
+				}
+
+				info, err := os.Stat(filePath)
+				if os.IsNotExist(err) {
+					return m, func() tea.Msg { return fmt.Sprintf("❌ File not found: '%s'. Please check the path and try again.", filePath) }
+				}
+				if err == nil && info.IsDir() {
+					return m, func() tea.Msg { return fmt.Sprintf("❌ Path '%s' is a directory, not a text file. Please specify a file path.", filePath) }
 				}
 
 				m.loading = true
@@ -294,7 +302,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 
-			if strings.HasPrefix(cmdLower, "/log ") {
+			if strings.HasPrefix(cmdLower, "/log ") || cmdLower == "/log" {
 				serviceName := strings.TrimSpace(input[5:])
 				if serviceName == "" {
 					return m, func() tea.Msg { return "⚠️ Usage: `/log <service_name>` (e.g., `/log nginx` or `/log systemd`)" }
@@ -322,33 +330,83 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 
-			// 3. Dynamic Model & Provider Switcher: /model <provider>
-			if strings.HasPrefix(cmdLower, "/model ") || strings.HasPrefix(cmdLower, "/provider ") {
+			// 3. Dynamic Model & Provider Switcher: /model <provider> [model]
+			if strings.HasPrefix(cmdLower, "/model ") || strings.HasPrefix(cmdLower, "/provider ") || cmdLower == "/model" || cmdLower == "/provider" {
 				parts := strings.Fields(input)
 				if len(parts) < 2 {
-					return m, func() tea.Msg { return "⚠️ Usage: `/model <gemini|claude|ollama|litellm>` (e.g., `/model gemini`)" }
+					return m, func() tea.Msg {
+						currProvider := m.cfg.LLM.DefaultProvider
+						return fmt.Sprintf("🤖 Current LLM Provider: [%s]\n💡 Usage: `/model <gemini|claude|ollama|litellm> [model_name]` (e.g. `/model ollama gemma3:4b` or `/model litellm`)", currProvider)
+					}
 				}
 				newProvider := strings.ToLower(parts[1])
-				m.cfg.LLM.DefaultProvider = newProvider
-				if len(parts) >= 3 {
-					switch newProvider {
-					case "ollama":
-						m.cfg.LLM.Ollama.Model = parts[2]
-					case "gemini":
-						m.cfg.LLM.Gemini.Model = parts[2]
-					case "claude":
-						m.cfg.LLM.Claude.Model = parts[2]
-					case "litellm":
-						m.cfg.LLM.LiteLLM.Model = parts[2]
+				validProviders := map[string]bool{"ollama": true, "gemini": true, "claude": true, "litellm": true}
+				if !validProviders[newProvider] {
+					return m, func() tea.Msg {
+						return fmt.Sprintf("❌ Unknown provider '%s'. Supported providers: `ollama`, `gemini`, `claude`, `litellm`", newProvider)
 					}
 				}
 
-				newClient, err := llm.NewClient(&m.cfg.LLM)
-				if err != nil {
-					return m, func() tea.Msg { return fmt.Sprintf("❌ Failed to switch LLM provider to '%s': %v", newProvider, err) }
+				m.loading = true
+				m.statusMsg = fmt.Sprintf("⏳ Probing LLM provider '%s' connectivity...", newProvider)
+				m.renderViewport()
+
+				return m, func() tea.Msg {
+					cfgCopy := m.cfg.LLM
+					cfgCopy.DefaultProvider = newProvider
+					if len(parts) >= 3 {
+						switch newProvider {
+						case "ollama":
+							cfgCopy.Ollama.Model = parts[2]
+						case "gemini":
+							cfgCopy.Gemini.Model = parts[2]
+						case "claude":
+							cfgCopy.Claude.Model = parts[2]
+						case "litellm":
+							cfgCopy.LiteLLM.Model = parts[2]
+						}
+					}
+
+					newClient, err := llm.NewClient(&cfgCopy)
+					if err != nil {
+						return fmt.Sprintf("❌ Failed to initialize LLM provider [%s]: %v", newProvider, err)
+					}
+
+					// Pre-flight health probe check
+					probeCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+					defer cancel()
+
+					_, probeErr := newClient.Generate(probeCtx, "ping", nil)
+					if probeErr != nil {
+						// Connection failed! Do NOT switch active provider!
+						return fmt.Sprintf("❌ Connection failed to LLM provider [%s]: %v\n\n⚠️ Active provider remains [%s]. Please check that the server/proxy is running.", newProvider, probeErr, m.cfg.LLM.DefaultProvider)
+					}
+
+					// Pre-flight passed! Switch provider and update active config
+					m.cfg.LLM = cfgCopy
+					m.llmClient = newClient
+
+					home, _ := os.UserHomeDir()
+					if home == "" {
+						home = "/home/fcurrie"
+					}
+					cfgPath := filepath.Join(home, ".config", "microharness", "config.yaml")
+					_ = m.cfg.Save(cfgPath)
+
+					activeModel := ""
+					switch newProvider {
+					case "ollama":
+						activeModel = m.cfg.LLM.Ollama.Model
+					case "gemini":
+						activeModel = m.cfg.LLM.Gemini.Model
+					case "claude":
+						activeModel = m.cfg.LLM.Claude.Model
+					case "litellm":
+						activeModel = m.cfg.LLM.LiteLLM.Model
+					}
+
+					return fmt.Sprintf("⚡ Pre-flight probe successful! Switched active LLM provider to [%s] (Model: %s)!", newProvider, activeModel)
 				}
-				m.llmClient = newClient
-				return m, func() tea.Msg { return fmt.Sprintf("🔄 Switched active LLM provider to [%s]!", newProvider) }
 			}
 
 			// 4. Context Auto-Compaction: /compact
@@ -540,10 +598,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 			// 6. Remote SSH Skill Execution: /run skill <name> [on <target>]
-			if strings.HasPrefix(cmdLower, "run skill ") || strings.HasPrefix(cmdLower, "/run ") {
+			if strings.HasPrefix(cmdLower, "run skill ") || strings.HasPrefix(cmdLower, "/run ") || cmdLower == "/run" || cmdLower == "run skill" {
 				raw := strings.TrimPrefix(input, "run skill ")
 				if strings.HasPrefix(cmdLower, "/run ") {
 					raw = strings.TrimPrefix(input, "/run ")
+				}
+				raw = strings.TrimSpace(raw)
+				if raw == "" || raw == "/run" || raw == "run skill" {
+					var availSkills []string
+					if m.skillMgr != nil {
+						for _, s := range m.skillMgr.ListSkills() {
+							availSkills = append(availSkills, s.Name)
+						}
+					}
+					return m, func() tea.Msg {
+						return fmt.Sprintf("⚠️ Usage: `/run <skill_name> [on <target>]` (e.g. `/run sys_health` or `/run journal_errors on 192.168.4.61`)\n💡 Available skills: `%s`", strings.Join(availSkills, "`, `"))
+					}
 				}
 
 				targetNode := m.activeTarget
@@ -554,13 +624,36 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					targetNode = strings.TrimSpace(parts[1])
 				}
 
+				if m.skillMgr == nil || m.skillMgr.GetSkill(skillName) == nil {
+					var availSkills []string
+					if m.skillMgr != nil {
+						for _, s := range m.skillMgr.ListSkills() {
+							availSkills = append(availSkills, s.Name)
+						}
+					}
+					return m, func() tea.Msg {
+						return fmt.Sprintf("❌ Skill '%s' not found.\n💡 Installed skills: `%s`\n💡 Tip: Use `/skill generate <prompt>` to create a new skill!", skillName, strings.Join(availSkills, "`, `"))
+					}
+				}
+
 				return m, func() tea.Msg {
 					var user, host string
-					for _, t := range m.cfg.Targets {
-						if t.Name == targetNode {
-							user = t.User
-							host = t.Host
-							break
+					if targetNode != "local" {
+						foundTgt := false
+						for _, t := range m.cfg.Targets {
+							if t.Name == targetNode || t.Host == targetNode {
+								user = t.User
+								host = t.Host
+								foundTgt = true
+								break
+							}
+						}
+						if !foundTgt {
+							var tgtList []string
+							for _, t := range m.cfg.Targets {
+								tgtList = append(tgtList, t.Name)
+							}
+							return fmt.Sprintf("❌ Target '%s' not found in config.yaml. Monitored targets: `local`, `%s`", targetNode, strings.Join(tgtList, "`, `"))
 						}
 					}
 
@@ -676,6 +769,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, func() tea.Msg {
 					defaultUser := sysinfo.GetDefaultSSHUser()
 					return fmt.Sprintf("💡 Target Addition Usage:\n• `add host <ip_or_hostname>` (e.g. `add host 192.168.100.200` — defaults to SSH user '%s')\n• `add host user@ip` (e.g. `add host %s@192.168.100.200`)\n• `add target <name> <ip> [user]` (e.g. `add target pxe-server 192.168.100.200 %s`)", defaultUser, defaultUser, defaultUser)
+				}
+			}
+
+			// Catch unrecognized slash commands
+			if strings.HasPrefix(input, "/") {
+				return m, func() tea.Msg {
+					return fmt.Sprintf("❌ Unrecognized slash command '%s'.\n💡 Type `/help` to view all available commands or press <Tab> for autocomplete.", input)
 				}
 			}
 

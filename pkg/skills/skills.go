@@ -62,6 +62,10 @@ func (m *Manager) LoadSkills() error {
 	return nil
 }
 
+func (m *Manager) GetSkill(name string) *Skill {
+	return m.skills[name]
+}
+
 func (m *Manager) ListSkills() []*Skill {
 	var list []*Skill
 	for _, s := range m.skills {
