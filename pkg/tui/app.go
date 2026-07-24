@@ -141,17 +141,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 
-		m.textarea.SetWidth(m.width - 2)
+		m.textarea.SetWidth(m.width - 4)
 
-		vpHeight := m.height - 12
-		if vpHeight < 8 {
-			vpHeight = 8
+		vpHeight := m.height - 13
+		if vpHeight < 6 {
+			vpHeight = 6
 		}
-		vpWidth := (m.width * 6) / 10
-		if vpWidth < 40 {
-			vpWidth = 40
-		}
-		m.viewport.Width = vpWidth
+		m.viewport.Width = m.width - 4
 		m.viewport.Height = vpHeight
 		m.renderViewport()
 
@@ -930,23 +926,26 @@ func (m model) View() string {
 	header := headerStyle.Render(fmt.Sprintf(" MicroHarness v0.2.0 │ Session: %s │ Focus: %s │ Provider: %s ",
 		m.sessionID, m.activeTarget, m.cfg.LLM.DefaultProvider))
 
-	// Left Pane (Chat Viewport & Textarea)
+	// Top Pane: Full-width Chat Viewport & Input Box
 	chatView := lipgloss.JoinVertical(
 		lipgloss.Left,
 		titleStyle.Render(fmt.Sprintf("── Agent Chat Session [%s] ──", m.sessionID)),
 		m.viewport.View(),
 		m.textarea.View(),
 	)
-	leftPane := boxStyle.Render(chatView)
+	topWidth := m.width - 4
+	if topWidth < 40 {
+		topWidth = 40
+	}
+	topPane := boxStyle.Width(topWidth).Render(chatView)
 
-	// Right Pane (System Stats, Model Telemetry HUD & Recent Jobs)
+	// Bottom Pane: Full-width System Monitor & Telemetry HUD (3 Horizontal Columns)
 	statsInfo := fmt.Sprintf(
-		"OS: %s/%s\nCPUs: %d | Load: %.2f\nRAM: %dMB / %dMB\nDisk Free: %d GB\nFocus Target: %s\n",
-		m.sysStats.OS, m.sysStats.Arch,
-		m.sysStats.CPUCount, m.sysStats.LoadAvg1,
+		"OS: %s/%s │ CPUs: %d\nLoad: %.2f │ Focus: %s\nRAM: %dMB / %dMB\nDisk Free: %d GB",
+		m.sysStats.OS, m.sysStats.Arch, m.sysStats.CPUCount,
+		m.sysStats.LoadAvg1, m.activeTarget,
 		m.sysStats.MemUsedMB, m.sysStats.MemTotalMB,
 		m.sysStats.DiskFree/(1024*1024*1024),
-		m.activeTarget,
 	)
 
 	activeModel := m.cfg.LLM.Gemini.Model
@@ -959,13 +958,12 @@ func (m model) View() string {
 	}
 
 	modelStatsInfo := fmt.Sprintf(
-		"Active Model: %s\nTotal Requests: %d\nLast Latency: %v\nLast Prompt: ~%d tokens\nLast Output: ~%d tokens\nTotal Tokens: ~%d tokens\nEst. Cost: $%.5f\n",
+		"Model: %s\nRequests: %d │ Latency: %v\nTokens: ~%d │ Output: ~%d\nEst. Cost: $%.5f",
 		activeModel,
 		m.llmStats.TotalRequests,
 		m.llmStats.LastLatency.Round(time.Millisecond),
-		m.llmStats.LastPromptTokens,
-		m.llmStats.LastEvalTokens,
 		m.llmStats.TotalTokens,
+		m.llmStats.LastEvalTokens,
 		m.llmStats.EstimatedCost,
 	)
 
@@ -977,29 +975,27 @@ func (m model) View() string {
 		logLines = append(logLines, "No recent job runs.")
 	}
 
-	rightView := lipgloss.JoinVertical(
-		lipgloss.Left,
-		titleStyle.Render("── System Monitor ──"),
-		statsInfo,
-		"\n"+titleStyle.Render("── Model Telemetry HUD ──"),
-		modelStatsInfo,
-		"\n"+titleStyle.Render("── Recent Jobs ──"),
+	jobsAndSkillsInfo := fmt.Sprintf(
+		"Skills: %d loaded\nRecent Jobs:\n%s",
+		len(m.skillMgr.ListSkills()),
 		strings.Join(logLines, "\n"),
-		"\n"+titleStyle.Render("── Loaded Skills ──"),
-		fmt.Sprintf("Active Skills: %d loaded", len(m.skillMgr.ListSkills())),
 	)
-	rightWidth := m.width - ((m.width * 6) / 10) - 8
-	if rightWidth < 25 {
-		rightWidth = 25
-	}
-	rightPane := boxStyle.Width(rightWidth).Render(rightView)
 
-	// Combine Panes horizontally
-	mainView := lipgloss.JoinHorizontal(lipgloss.Top, leftPane, rightPane)
+	colWidth := (m.width - 10) / 3
+	if colWidth < 20 {
+		colWidth = 20
+	}
+
+	col1 := lipgloss.NewStyle().Width(colWidth).Render(titleStyle.Render("── System Monitor ──") + "\n" + statsInfo)
+	col2 := lipgloss.NewStyle().Width(colWidth).Render(titleStyle.Render("── Model Telemetry HUD ──") + "\n" + modelStatsInfo)
+	col3 := lipgloss.NewStyle().Width(colWidth).Render(titleStyle.Render("── Jobs & Skills ──") + "\n" + jobsAndSkillsInfo)
+
+	bottomView := lipgloss.JoinHorizontal(lipgloss.Top, col1, col2, col3)
+	bottomPane := boxStyle.Width(topWidth).Render(bottomView)
 
 	footer := fmt.Sprintf("\n[Enter] Send  │  [! <cmd>] Shell  │  [/help] Commands  │  [Esc] Quit  │  Time: %s", time.Now().Format("15:04:05"))
 
-	return lipgloss.JoinVertical(lipgloss.Left, header, mainView, footer)
+	return lipgloss.JoinVertical(lipgloss.Left, header, topPane, bottomPane, footer)
 }
 
 func (m *model) renderViewport() {
