@@ -485,20 +485,32 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if len(m.cfg.Targets) == 0 {
 					return m, func() tea.Msg { return "No target systems configured in config.yaml." }
 				}
-				var lines []string
-				lines = append(lines, "🖥️ Monitored Target Systems:")
-				for _, t := range m.cfg.Targets {
-					focusMarker := ""
-					if t.Name == m.activeTarget {
-						focusMarker = " 🎯 [ACTIVE FOCUS]"
+
+				m.loading = true
+				m.statusMsg = "🌐 Probing target systems & remote telemetry..."
+				m.renderViewport()
+
+				return m, func() tea.Msg {
+					ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+					defer cancel()
+
+					var inputs []sysinfo.TargetInput
+					for _, t := range m.cfg.Targets {
+						user := t.User
+						if user == "" || user == "root" {
+							user = sysinfo.GetDefaultSSHUser()
+						}
+						inputs = append(inputs, sysinfo.TargetInput{
+							Name: t.Name,
+							Type: t.Type,
+							Host: t.Host,
+							User: user,
+						})
 					}
-					if t.Type == "ssh" {
-						lines = append(lines, fmt.Sprintf("  • %s (ssh: %s@%s)%s", t.Name, t.User, t.Host, focusMarker))
-					} else {
-						lines = append(lines, fmt.Sprintf("  • %s (local host)%s", t.Name, focusMarker))
-					}
+
+					telemetryList := sysinfo.ProbeAllTargets(ctx, inputs, m.activeTarget)
+					return sysinfo.FormatTargetsTable(telemetryList)
 				}
-				return m, func() tea.Msg { return strings.Join(lines, "\n") }
 			}
 
 			if cmdLower == "/stats" {
@@ -597,13 +609,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			// Add target / host command handling
 			if name, host, user, ok := ParseAddTargetInput(input); ok {
+				if user == "" || user == "root" {
+					user = sysinfo.GetDefaultSSHUser()
+				}
 				m.loading = true
-				m.statusMsg = fmt.Sprintf("⏳ Verifying passwordless SSH connectivity to %s@%s...", user, host)
+				m.statusMsg = fmt.Sprintf("⏳ Connecting & initializing remote target %s@%s...", user, host)
 				m.renderViewport()
 
 				return m, func() tea.Msg {
-					sshOK, sshMsg := sysinfo.VerifyPasswordlessSSH(context.Background(), user, host)
-
 					found := false
 					for i, t := range m.cfg.Targets {
 						if t.Name == name || t.Host == host {
@@ -633,10 +646,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					cfgPath := filepath.Join(home, ".config", "microharness", "config.yaml")
 					_ = m.cfg.Save(cfgPath)
 
-					if sshOK {
-						return fmt.Sprintf("✅ Target '%s' (%s@%s) registered successfully in config.yaml & set as active focus target!\n🔑 SSH Status: %s", name, user, host, sshMsg)
+					ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+					defer cancel()
+
+					tInput := sysinfo.TargetInput{
+						Name: name,
+						Type: "ssh",
+						Host: host,
+						User: user,
 					}
-					return fmt.Sprintf("⚠️ Target '%s' (%s@%s) registered in config.yaml & set as active focus target.\n⚠️ SSH Status: %s", name, user, host, sshMsg)
+					telemetry := sysinfo.ProbeTargetTelemetry(ctx, tInput, m.activeTarget)
+					table := sysinfo.FormatTargetsTable([]sysinfo.TargetTelemetry{telemetry})
+
+					return fmt.Sprintf("✅ Target '%s' connected & initialized in config.yaml!\n\n%s", name, table)
 				}
 			}
 

@@ -262,22 +262,6 @@ func DiscoverNetworkTargets(ctx context.Context, defaultUser string) ([]Discover
 			if err == nil {
 				host.PasswordlessSSH = true
 				host.Hostname = strings.TrimSpace(string(out))
-			} else {
-				// Fallback test with 'root' if defaultUser was different
-				if defaultUser != "root" {
-					sshCmd2 := exec.CommandContext(ctx, "ssh",
-						"-o", "BatchMode=yes",
-						"-o", "ConnectTimeout=3",
-						"-o", "StrictHostKeyChecking=accept-new",
-						fmt.Sprintf("root@%s", targetIP),
-						"hostname",
-					)
-					if out2, err2 := sshCmd2.CombinedOutput(); err2 == nil {
-						host.PasswordlessSSH = true
-						host.User = "root"
-						host.Hostname = strings.TrimSpace(string(out2))
-					}
-				}
 			}
 
 			mu.Lock()
@@ -294,6 +278,179 @@ func DiscoverNetworkTargets(ctx context.Context, defaultUser string) ([]Discover
 	})
 
 	return results, nil
+}
+
+type TargetInput struct {
+	Name string `json:"name"`
+	Type string `json:"type"`
+	Host string `json:"host"`
+	User string `json:"user"`
+}
+
+type TargetTelemetry struct {
+	Name         string `json:"name"`
+	Host         string `json:"host"`
+	User         string `json:"user"`
+	Type         string `json:"type"`
+	Hostname     string `json:"hostname"`
+	OS           string `json:"os"`
+	Kernel       string `json:"kernel"`
+	NetInterface string `json:"interface,omitempty"`
+	Status       string `json:"status"`
+}
+
+func ProbeTargetTelemetry(ctx context.Context, t TargetInput, activeTarget string) TargetTelemetry {
+	user := t.User
+	if user == "" || user == "root" {
+		user = GetDefaultSSHUser()
+	}
+
+	tt := TargetTelemetry{
+		Name:   t.Name,
+		Host:   t.Host,
+		User:   user,
+		Type:   t.Type,
+		Status: "ONLINE",
+	}
+
+	if t.Name == activeTarget {
+		tt.Status = "🎯 ACTIVE"
+	}
+
+	if t.Type == "local" || t.Host == "127.0.0.1" || t.Host == "localhost" || t.Host == "" {
+		tt.Host = "127.0.0.1"
+		tt.User = GetDefaultSSHUser()
+		if h, err := os.Hostname(); err == nil {
+			tt.Hostname = h
+		} else {
+			tt.Hostname = "localhost"
+		}
+
+		if data, err := os.ReadFile("/etc/os-release"); err == nil {
+			lines := strings.Split(string(data), "\n")
+			for _, line := range lines {
+				if strings.HasPrefix(line, "PRETTY_NAME=") {
+					pretty := strings.TrimPrefix(line, "PRETTY_NAME=")
+					tt.OS = strings.Trim(pretty, "\"")
+					break
+				}
+			}
+		}
+		if tt.OS == "" {
+			tt.OS = fmt.Sprintf("%s/%s", "linux", "amd64")
+		}
+
+		cmd := exec.CommandContext(ctx, "uname", "-sr")
+		if out, err := cmd.Output(); err == nil {
+			tt.Kernel = strings.TrimSpace(string(out))
+		} else {
+			tt.Kernel = "Linux"
+		}
+		tt.NetInterface = "lo (local)"
+		return tt
+	}
+
+	sshCmd := exec.CommandContext(ctx, "ssh",
+		"-o", "BatchMode=yes",
+		"-o", "ConnectTimeout=2",
+		"-o", "StrictHostKeyChecking=accept-new",
+		fmt.Sprintf("%s@%s", user, t.Host),
+		"hostname; uname -sr; cat /etc/os-release 2>/dev/null | grep '^PRETTY_NAME=' | cut -d= -f2 | tr -d '\"'",
+	)
+
+	out, err := sshCmd.Output()
+	if err != nil {
+		tt.Status = "🔒 KEY NEEDED"
+		tt.Hostname = "unknown"
+		tt.OS = "unknown"
+		tt.Kernel = "unknown"
+		tt.NetInterface = "LAN / SSH"
+		return tt
+	}
+
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if len(lines) >= 1 && lines[0] != "" {
+		tt.Hostname = strings.TrimSpace(lines[0])
+	} else {
+		tt.Hostname = "remote-host"
+	}
+
+	if len(lines) >= 2 && lines[1] != "" {
+		tt.Kernel = strings.TrimSpace(lines[1])
+	} else {
+		tt.Kernel = "Linux"
+	}
+
+	if len(lines) >= 3 && lines[2] != "" {
+		tt.OS = strings.TrimSpace(lines[2])
+	} else {
+		tt.OS = "Linux OS"
+	}
+	tt.NetInterface = "LAN / SSH"
+
+	return tt
+}
+
+func ProbeAllTargets(ctx context.Context, targets []TargetInput, activeTarget string) []TargetTelemetry {
+	results := make([]TargetTelemetry, len(targets))
+	var wg sync.WaitGroup
+	for i, t := range targets {
+		wg.Add(1)
+		go func(idx int, tc TargetInput) {
+			defer wg.Done()
+			results[idx] = ProbeTargetTelemetry(ctx, tc, activeTarget)
+		}(i, t)
+	}
+	wg.Wait()
+	return results
+}
+
+func FormatTargetsTable(telemetryList []TargetTelemetry) string {
+	var sb strings.Builder
+	sb.WriteString("🖥️ Monitored Target Systems & Remote Telemetry:\n\n")
+
+	headers := []string{"TARGET / IP", "HOSTNAME", "OS RELEASE", "KERNEL", "SSH USER", "STATUS"}
+	widths := []int{15, 18, 22, 22, 10, 14}
+
+	pad := func(s string, w int) string {
+		runes := []rune(s)
+		if len(runes) > w {
+			return string(runes[:w-1]) + "…"
+		}
+		return s + strings.Repeat(" ", w-len(runes))
+	}
+
+	makeBorder := func(left, mid, right, fill string) string {
+		var parts []string
+		for _, w := range widths {
+			parts = append(parts, strings.Repeat(fill, w+2))
+		}
+		return left + strings.Join(parts, mid) + right
+	}
+
+	sb.WriteString(makeBorder("┌", "┬", "┐", "─") + "\n│")
+	for i, h := range headers {
+		sb.WriteString(" " + pad(h, widths[i]) + " │")
+	}
+	sb.WriteString("\n" + makeBorder("├", "┼", "┤", "─") + "\n")
+
+	for _, tt := range telemetryList {
+		targetStr := tt.Name
+		if tt.Host != "" && tt.Host != tt.Name && tt.Host != "127.0.0.1" {
+			targetStr = fmt.Sprintf("%s (%s)", tt.Name, tt.Host)
+		}
+
+		sb.WriteString("│ ")
+		sb.WriteString(pad(targetStr, widths[0]) + " │ ")
+		sb.WriteString(pad(tt.Hostname, widths[1]) + " │ ")
+		sb.WriteString(pad(tt.OS, widths[2]) + " │ ")
+		sb.WriteString(pad(tt.Kernel, widths[3]) + " │ ")
+		sb.WriteString(pad(tt.User, widths[4]) + " │ ")
+		sb.WriteString(pad(tt.Status, widths[5]) + " │\n")
+	}
+
+	sb.WriteString(makeBorder("└", "┴", "┘", "─"))
+	return sb.String()
 }
 
 func VerifyPasswordlessSSH(ctx context.Context, user, host string) (bool, string) {

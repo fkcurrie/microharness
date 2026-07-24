@@ -145,6 +145,26 @@ func LoadConfig(path string) (*Config, error) {
 		return nil, err
 	}
 
+	// Sanitize targets: never use root accounts
+	sshUser := os.Getenv("USER")
+	if sshUser == "" || sshUser == "root" {
+		sshUser = os.Getenv("LOGNAME")
+	}
+	if sshUser == "" || sshUser == "root" {
+		sshUser = "fcurrie"
+	}
+
+	changed := false
+	for i := range cfg.Targets {
+		if cfg.Targets[i].Type == "ssh" && (cfg.Targets[i].User == "root" || cfg.Targets[i].User == "") {
+			cfg.Targets[i].User = sshUser
+			changed = true
+		}
+	}
+	if changed {
+		_ = cfg.Save(path)
+	}
+
 	return cfg, nil
 }
 
