@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -85,6 +86,45 @@ func (m *Manager) Execute(ctx context.Context, name string, args []string) (stri
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return string(output), fmt.Errorf("skill execution error: %w | output: %s", err, string(output))
+	}
+
+	return string(output), nil
+}
+
+func (m *Manager) ExecuteOnTarget(ctx context.Context, name string, user, host string, args []string) (string, error) {
+	if host == "127.0.0.1" || host == "localhost" || host == "" || host == "local" {
+		return m.Execute(ctx, name, args)
+	}
+
+	skill, ok := m.skills[name]
+	if !ok {
+		return "", fmt.Errorf("skill '%s' not found", name)
+	}
+
+	scriptPath := filepath.Join(skill.Dir, skill.Script)
+	scriptBytes, err := os.ReadFile(scriptPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to read skill script at %s: %w", scriptPath, err)
+	}
+
+	if user == "" {
+		user = "root"
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	sshCmd := exec.CommandContext(ctx, "ssh",
+		"-o", "BatchMode=yes",
+		"-o", "ConnectTimeout=5",
+		"-o", "StrictHostKeyChecking=accept-new",
+		fmt.Sprintf("%s@%s", user, host),
+		"bash -s",
+	)
+	sshCmd.Stdin = strings.NewReader(string(scriptBytes))
+	output, err := sshCmd.CombinedOutput()
+	if err != nil {
+		return string(output), fmt.Errorf("remote SSH skill execution error on %s@%s: %w | output: %s", user, host, err, string(output))
 	}
 
 	return string(output), nil

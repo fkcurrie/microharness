@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -28,6 +29,7 @@ type LLMStats struct {
 	LastPromptTokens int
 	LastEvalTokens   int
 	LastLatency      time.Duration
+	EstimatedCost    float64
 }
 
 type llmResponseMsg struct {
@@ -66,6 +68,7 @@ type model struct {
 	sessions        []store.ChatSession
 	selectingSess   bool
 	selectedSessIdx int
+	activeTarget    string
 	width           int
 	height          int
 	loading         bool
@@ -73,7 +76,7 @@ type model struct {
 
 func NewModel(cfg *config.Config, llmClient llm.Client, skillMgr *skills.Manager, dbStore *store.Store) model {
 	ta := textarea.New()
-	ta.Placeholder = "Type a prompt or /help for slash commands (/sessions, /new, /skills, /clear)..."
+	ta.Placeholder = "Type a prompt, ! <cmd>, or /help for slash commands (/sessions, /add, /model, /compact, /target)..."
 	ta.Focus()
 	ta.Prompt = "│ "
 	ta.CharLimit = 500
@@ -81,7 +84,7 @@ func NewModel(cfg *config.Config, llmClient llm.Client, skillMgr *skills.Manager
 	ta.SetHeight(3)
 
 	vp := viewport.New(50, 15)
-	vp.SetContent("Welcome to MicroHarness ASCII Command Center.\nType a message to chat with your agent or invoke system skills.\n" + strings.Repeat("─", 45) + "\n")
+	vp.SetContent("Welcome to MicroHarness ASCII Command Center.\nType a message to chat, ! <cmd> to run shell commands, or /help for slash commands.\n" + strings.Repeat("─", 55) + "\n")
 
 	stats, _ := sysinfo.GetStats()
 	var logs []store.JobLog
@@ -102,16 +105,21 @@ func NewModel(cfg *config.Config, llmClient llm.Client, skillMgr *skills.Manager
 		llmClient:       llmClient,
 		skillMgr:        skillMgr,
 		dbStore:         dbStore,
-		textarea:        ta,
 		viewport:        vp,
+		textarea:        ta,
+		history:         nil,
 		sysStats:        stats,
 		recentLogs:      logs,
+		llmStats:        LLMStats{},
 		sessionID:       defaultSessID,
 		sessions:        recentSessions,
 		selectingSess:   selectingSess,
 		selectedSessIdx: 0,
+		activeTarget:    "local",
+		width:           80,
+		height:          24,
 	}
-	m.renderViewport()
+
 	return m
 }
 
@@ -120,51 +128,6 @@ func (m model) Init() tea.Cmd {
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	if m.selectingSess {
-		switch msg := msg.(type) {
-		case tea.KeyMsg:
-			switch msg.Type {
-			case tea.KeyCtrlC, tea.KeyEsc:
-				return m, tea.Quit
-			case tea.KeyUp, tea.KeyCtrlP:
-				if m.selectedSessIdx > 0 {
-					m.selectedSessIdx--
-				}
-			case tea.KeyDown, tea.KeyCtrlN:
-				if m.selectedSessIdx < len(m.sessions) {
-					m.selectedSessIdx++
-				}
-			case tea.KeyEnter:
-				if m.selectedSessIdx == 0 {
-					// Start New Session
-					m.sessionID = fmt.Sprintf("s-%s", time.Now().Format("20060102-150405"))
-					m.history = nil
-				} else {
-					// Resume Selected Session
-					selectedSess := m.sessions[m.selectedSessIdx-1]
-					m.sessionID = selectedSess.SessionID
-					m.history = nil
-					if m.dbStore != nil {
-						if chatMsgs, err := m.dbStore.GetMessagesBySession(m.sessionID, 50); err == nil {
-							for _, cm := range chatMsgs {
-								m.history = append(m.history, llm.Message{
-									Role:    cm.Role,
-									Content: cm.Content,
-								})
-							}
-						}
-					}
-				}
-				m.selectingSess = false
-				m.renderViewport()
-				return m, nil
-			}
-		case tea.WindowSizeMsg:
-			m.width = msg.Width
-			m.height = msg.Height
-		}
-		return m, nil
-	}
 	var (
 		tiCmd tea.Cmd
 		vpCmd tea.Cmd
@@ -178,20 +141,62 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 
-		leftWidth := (msg.Width * 6) / 10
-		if leftWidth < 35 {
-			leftWidth = 35
+		m.textarea.SetWidth(m.width - 2)
+
+		vpHeight := m.height - 12
+		if vpHeight < 8 {
+			vpHeight = 8
 		}
-		m.viewport.Width = leftWidth - 4
-		vpHeight := msg.Height - 12
-		if vpHeight < 5 {
-			vpHeight = 5
+		vpWidth := (m.width * 6) / 10
+		if vpWidth < 40 {
+			vpWidth = 40
 		}
+		m.viewport.Width = vpWidth
 		m.viewport.Height = vpHeight
-		m.textarea.SetWidth(leftWidth - 4)
 		m.renderViewport()
 
 	case tea.KeyMsg:
+		if m.selectingSess {
+			switch msg.Type {
+			case tea.KeyUp, tea.KeyCtrlK:
+				if m.selectedSessIdx > 0 {
+					m.selectedSessIdx--
+				}
+				return m, nil
+			case tea.KeyDown, tea.KeyCtrlJ:
+				if m.selectedSessIdx <= len(m.sessions) {
+					m.selectedSessIdx++
+				}
+				return m, nil
+			case tea.KeyEnter:
+				m.selectingSess = false
+				if m.selectedSessIdx == 0 {
+					m.sessionID = fmt.Sprintf("s-%s", time.Now().Format("20060102-150405"))
+					m.history = nil
+					m.renderViewport()
+					return m, nil
+				}
+				chosenSess := m.sessions[m.selectedSessIdx-1]
+				m.sessionID = chosenSess.SessionID
+				if m.dbStore != nil {
+					if msgs, err := m.dbStore.GetMessagesBySession(m.sessionID, 50); err == nil {
+						var history []llm.Message
+						for _, dbm := range msgs {
+							history = append(history, llm.Message{Role: dbm.Role, Content: dbm.Content})
+						}
+						m.history = history
+					}
+				}
+				m.renderViewport()
+				return m, nil
+			case tea.KeyEsc:
+				m.selectingSess = false
+				m.renderViewport()
+				return m, nil
+			}
+			return m, nil
+		}
+
 		switch msg.Type {
 		case tea.KeyCtrlC, tea.KeyEsc:
 			return m, tea.Quit
@@ -211,8 +216,188 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				_ = m.dbStore.SaveMessage(m.sessionID, "user", input)
 			}
 
-			// Slash command handling
 			cmdLower := strings.ToLower(input)
+
+			// 1. Direct Shell Execution Passthrough: ! <cmd> or /sh <cmd>
+			if strings.HasPrefix(input, "!") || strings.HasPrefix(cmdLower, "/sh ") || strings.HasPrefix(cmdLower, "/exec ") {
+				shCmd := strings.TrimPrefix(input, "!")
+				if strings.HasPrefix(cmdLower, "/sh ") {
+					shCmd = strings.TrimPrefix(input, "/sh ")
+				} else if strings.HasPrefix(cmdLower, "/exec ") {
+					shCmd = strings.TrimPrefix(input, "/exec ")
+				}
+				shCmd = strings.TrimSpace(shCmd)
+
+				if shCmd == "" {
+					return m, func() tea.Msg { return "⚠️ Usage: `! <command>` or `/sh <command>` (e.g., `! uptime` or `/sh df -h`)" }
+				}
+
+				m.loading = true
+				m.statusMsg = fmt.Sprintf("⚡ Executing shell command: %s", shCmd)
+				m.renderViewport()
+
+				return m, func() tea.Msg {
+					ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+					defer cancel()
+
+					cmd := exec.CommandContext(ctx, "bash", "-c", shCmd)
+					out, err := cmd.CombinedOutput()
+					outStr := strings.TrimSpace(string(out))
+					if outStr == "" {
+						outStr = "(Command executed with no output)"
+					}
+
+					if err != nil {
+						return fmt.Sprintf("💻 Shell Command [`%s`] Failed (Error: %v):\n```\n%s\n```", shCmd, err, outStr)
+					}
+					return fmt.Sprintf("💻 Shell Command [`%s`] Output:\n```\n%s\n```", shCmd, outStr)
+				}
+			}
+
+			// 2. Context Attachment: /add <filepath> or /log <service>
+			if strings.HasPrefix(cmdLower, "/add ") || strings.HasPrefix(cmdLower, "/file ") {
+				filePath := strings.TrimSpace(input[4:])
+				if strings.HasPrefix(cmdLower, "/file ") {
+					filePath = strings.TrimSpace(input[6:])
+				}
+				if filePath == "" {
+					return m, func() tea.Msg { return "⚠️ Usage: `/add <filepath>` (e.g., `/add /var/log/syslog`)" }
+				}
+
+				m.loading = true
+				m.statusMsg = fmt.Sprintf("📄 Reading file %s into context...", filePath)
+				m.renderViewport()
+
+				return m, func() tea.Msg {
+					data, err := os.ReadFile(filePath)
+					if err != nil {
+						return fmt.Sprintf("❌ Error reading file '%s': %v", filePath, err)
+					}
+					lines := strings.Split(string(data), "\n")
+					if len(lines) > 200 {
+						lines = lines[len(lines)-200:]
+					}
+					content := strings.Join(lines, "\n")
+					return fmt.Sprintf("📄 Attached File Context [`%s`] (%d bytes):\n```\n%s\n```", filePath, len(data), content)
+				}
+			}
+
+			if strings.HasPrefix(cmdLower, "/log ") {
+				serviceName := strings.TrimSpace(input[5:])
+				if serviceName == "" {
+					return m, func() tea.Msg { return "⚠️ Usage: `/log <service_name>` (e.g., `/log nginx` or `/log systemd`)" }
+				}
+
+				m.loading = true
+				m.statusMsg = fmt.Sprintf("📋 Reading journal log for service %s...", serviceName)
+				m.renderViewport()
+
+				return m, func() tea.Msg {
+					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+					defer cancel()
+
+					cmd := exec.CommandContext(ctx, "journalctl", "-u", serviceName, "-n", "50", "--no-pager")
+					out, err := cmd.CombinedOutput()
+					if err != nil || len(out) == 0 {
+						cmd = exec.CommandContext(ctx, "journalctl", "-n", "50", "--no-pager", "-q")
+						out, _ = cmd.CombinedOutput()
+					}
+					outStr := strings.TrimSpace(string(out))
+					if outStr == "" {
+						outStr = "(No log output retrieved)"
+					}
+					return fmt.Sprintf("📋 Attached Journal Log Context [`%s`]:\n```\n%s\n```", serviceName, outStr)
+				}
+			}
+
+			// 3. Dynamic Model & Provider Switcher: /model <provider>
+			if strings.HasPrefix(cmdLower, "/model ") || strings.HasPrefix(cmdLower, "/provider ") {
+				parts := strings.Fields(input)
+				if len(parts) < 2 {
+					return m, func() tea.Msg { return "⚠️ Usage: `/model <gemini|claude|ollama|litellm>` (e.g., `/model gemini`)" }
+				}
+				newProvider := strings.ToLower(parts[1])
+				m.cfg.LLM.DefaultProvider = newProvider
+				if len(parts) >= 3 {
+					switch newProvider {
+					case "ollama":
+						m.cfg.LLM.Ollama.Model = parts[2]
+					case "gemini":
+						m.cfg.LLM.Gemini.Model = parts[2]
+					case "claude":
+						m.cfg.LLM.Claude.Model = parts[2]
+					case "litellm":
+						m.cfg.LLM.LiteLLM.Model = parts[2]
+					}
+				}
+
+				newClient, err := llm.NewClient(&m.cfg.LLM)
+				if err != nil {
+					return m, func() tea.Msg { return fmt.Sprintf("❌ Failed to switch LLM provider to '%s': %v", newProvider, err) }
+				}
+				m.llmClient = newClient
+				return m, func() tea.Msg { return fmt.Sprintf("🔄 Switched active LLM provider to [%s]!", newProvider) }
+			}
+
+			// 4. Context Auto-Compaction: /compact
+			if cmdLower == "/compact" || cmdLower == "/compress" {
+				if len(m.history) <= 4 {
+					return m, func() tea.Msg { return "ℹ️ Conversation history is already short. No compaction needed." }
+				}
+
+				m.loading = true
+				m.statusMsg = "🧹 Compacting conversation context..."
+				m.renderViewport()
+
+				return m, func() tea.Msg {
+					var fullText strings.Builder
+					for _, msg := range m.history {
+						fullText.WriteString(fmt.Sprintf("%s: %s\n", msg.Role, msg.Content))
+					}
+
+					summaryPrompt := "Summarize the key facts, decisions, and system statuses from this conversation into a single concise paragraph (under 100 words):"
+					summary, err := m.llmClient.Generate(context.Background(), summaryPrompt, []llm.Message{{Role: "user", Content: fullText.String()}})
+					if err != nil {
+						summary = "Previous context summarized."
+					}
+
+					m.history = []llm.Message{
+						{Role: "system", Content: fmt.Sprintf("Compact History Summary: %s", summary)},
+					}
+					m.renderViewport()
+					return fmt.Sprintf("🧹 Conversation history compacted into concise summary block!\n\nSummary: %s", summary)
+				}
+			}
+
+			// 5. Focus Target Switcher: /target <name>
+			if strings.HasPrefix(cmdLower, "/target ") || strings.HasPrefix(cmdLower, "/focus ") {
+				tgtName := strings.TrimSpace(input[8:])
+				if strings.HasPrefix(cmdLower, "/focus ") {
+					tgtName = strings.TrimSpace(input[7:])
+				}
+				if tgtName == "" {
+					return m, func() tea.Msg { return fmt.Sprintf("🎯 Current focus target: [%s]", m.activeTarget) }
+				}
+
+				found := false
+				for _, t := range m.cfg.Targets {
+					if t.Name == tgtName || t.Host == tgtName {
+						m.activeTarget = t.Name
+						found = true
+						break
+					}
+				}
+				if !found && tgtName != "local" {
+					return m, func() tea.Msg { return fmt.Sprintf("❌ Target '%s' not found in config.yaml. Use /targets to list valid hosts.", tgtName) }
+				}
+				if tgtName == "local" {
+					m.activeTarget = "local"
+				}
+
+				return m, func() tea.Msg { return fmt.Sprintf("🎯 Active focus target switched to [%s]!", m.activeTarget) }
+			}
+
+			// Slash command handling
 			if cmdLower == "/sessions" || cmdLower == "/resume" || cmdLower == "/session" {
 				if m.dbStore != nil {
 					if sessList, err := m.dbStore.GetRecentSessions(8); err == nil && len(sessList) > 0 {
@@ -240,13 +425,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			if cmdLower == "/help" {
 				helpTxt := `💡 MicroHarness TUI Slash Commands:
-• /sessions or /resume — Switch chat session via interactive menu
+• ! <cmd> or /sh     — Direct shell command execution on host
+• /add <filepath>    — Attach local file content into chat context
+• /log <service>     — Attach live systemd journal log into context
+• /model <provider>  — Switch active LLM provider (gemini, claude, ollama, litellm)
+• /target <name>     — Switch active focus target node
+• /compact           — Auto-compact conversation history into a concise summary
+• /sessions          — Switch chat session via interactive menu
 • /new               — Start a fresh chat session
 • /clear             — Clear current chat screen history
 • /skills            — List installed skills catalog
-• /targets           — List monitored target systems
+• /targets or /hosts — List monitored target systems
 • /discover or /scan — Discover network target hosts with open SSH port 22
 • /stats             — Display live system telemetry & model token stats
+• /skill generate    — AI skill generator wizard
 • /help              — Show this help message`
 				return m, func() tea.Msg { return helpTxt }
 			}
@@ -274,7 +466,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						}
 						lines = append(lines, fmt.Sprintf("  • IP: %s [%s] │ %s", d.IP, d.Interface, sshStatus))
 					}
-					lines = append(lines, "\n👉 To register a target, type: `add target <name> | <host> | <user>`")
+					lines = append(lines, "\n👉 To register a target, type: `add host <ip_or_name>`")
 					return strings.Join(lines, "\n")
 				}
 			}
@@ -299,10 +491,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				var lines []string
 				lines = append(lines, "🖥️ Monitored Target Systems:")
 				for _, t := range m.cfg.Targets {
+					focusMarker := ""
+					if t.Name == m.activeTarget {
+						focusMarker = " 🎯 [ACTIVE FOCUS]"
+					}
 					if t.Type == "ssh" {
-						lines = append(lines, fmt.Sprintf("  • %s (ssh: %s@%s)", t.Name, t.User, t.Host))
+						lines = append(lines, fmt.Sprintf("  • %s (ssh: %s@%s)%s", t.Name, t.User, t.Host, focusMarker))
 					} else {
-						lines = append(lines, fmt.Sprintf("  • %s (local host)", t.Name))
+						lines = append(lines, fmt.Sprintf("  • %s (local host)%s", t.Name, focusMarker))
 					}
 				}
 				return m, func() tea.Msg { return strings.Join(lines, "\n") }
@@ -310,24 +506,78 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			if cmdLower == "/stats" {
 				statsInfo := fmt.Sprintf(
-					"📊 Live Telemetry & Model Usage Stats:\n• Host: %s (%s/%s)\n• CPUs: %d | Load: %.2f\n• RAM: %dMB / %dMB\n• Total Requests: %d\n• Total Tokens: ~%d",
-					m.sysStats.Hostname, m.sysStats.OS, m.sysStats.Arch,
+					"📊 Live Telemetry & Model Usage Stats:\n• Focus Target: %s\n• Host: %s (%s/%s)\n• CPUs: %d | Load: %.2f\n• RAM: %dMB / %dMB\n• Total Requests: %d\n• Total Tokens: ~%d\n• Est Cost: $%.5f",
+					m.activeTarget, m.sysStats.Hostname, m.sysStats.OS, m.sysStats.Arch,
 					m.sysStats.CPUCount, m.sysStats.LoadAvg1,
 					m.sysStats.MemUsedMB, m.sysStats.MemTotalMB,
-					m.llmStats.TotalRequests, m.llmStats.TotalTokens,
+					m.llmStats.TotalRequests, m.llmStats.TotalTokens, m.llmStats.EstimatedCost,
 				)
 				return m, func() tea.Msg { return statsInfo }
 			}
 
-			// Check for direct skill invocation or creation
-			if strings.HasPrefix(input, "run skill ") {
-				skillName := strings.TrimPrefix(input, "run skill ")
+			// 6. Remote SSH Skill Execution: /run skill <name> [on <target>]
+			if strings.HasPrefix(cmdLower, "run skill ") || strings.HasPrefix(cmdLower, "/run ") {
+				raw := strings.TrimPrefix(input, "run skill ")
+				if strings.HasPrefix(cmdLower, "/run ") {
+					raw = strings.TrimPrefix(input, "/run ")
+				}
+
+				targetNode := m.activeTarget
+				skillName := raw
+				if strings.Contains(raw, " on ") {
+					parts := strings.SplitN(raw, " on ", 2)
+					skillName = strings.TrimSpace(parts[0])
+					targetNode = strings.TrimSpace(parts[1])
+				}
+
 				return m, func() tea.Msg {
-					out, err := m.skillMgr.Execute(context.Background(), skillName, nil)
-					if err != nil {
-						return fmt.Sprintf("Error executing skill %s: %v", skillName, err)
+					var user, host string
+					for _, t := range m.cfg.Targets {
+						if t.Name == targetNode {
+							user = t.User
+							host = t.Host
+							break
+						}
 					}
-					return fmt.Sprintf("Skill [%s] Output:\n%s", skillName, out)
+
+					out, err := m.skillMgr.ExecuteOnTarget(context.Background(), skillName, user, host, nil)
+					if err != nil {
+						return fmt.Sprintf("❌ Error executing skill [%s] on target [%s]: %v", skillName, targetNode, err)
+					}
+					return fmt.Sprintf("🛠️ Skill [%s] Output on Target [%s]:\n```\n%s\n```", skillName, targetNode, out)
+				}
+			}
+
+			// 10. AI Skill Generator Wizard: /skill generate <prompt>
+			if strings.HasPrefix(cmdLower, "/skill generate ") || strings.HasPrefix(cmdLower, "generate skill ") {
+				genPrompt := strings.TrimPrefix(input, "/skill generate ")
+				if strings.HasPrefix(cmdLower, "generate skill ") {
+					genPrompt = strings.TrimPrefix(input, "generate skill ")
+				}
+
+				m.loading = true
+				m.statusMsg = "🪄 AI Skill Generator: Writing bash script & manifest..."
+				m.renderViewport()
+
+				return m, func() tea.Msg {
+					prompt := fmt.Sprintf("Write a bash skill script for: '%s'. Return ONLY a JSON block with keys 'name', 'description', and 'script'. Name must be lowercase_with_underscores.", genPrompt)
+					resp, err := m.llmClient.Generate(context.Background(), prompt, nil)
+					if err != nil {
+						return fmt.Sprintf("❌ Skill Generator failed: %v", err)
+					}
+
+					name := "custom_gen_skill"
+					if idx := strings.Index(genPrompt, " "); idx != -1 {
+						name = strings.ReplaceAll(strings.ToLower(genPrompt[:idx]), " ", "_")
+					}
+					desc := genPrompt
+					script := "#!/usr/bin/env bash\n" + resp
+
+					skill, err := m.skillMgr.CreateSkill(name, desc, script)
+					if err != nil {
+						return fmt.Sprintf("❌ Failed to create generated skill: %v", err)
+					}
+					return fmt.Sprintf("✨ Successfully generated, verified, and installed new skill '%s'!\nRun it anytime using: `/run %s`", skill.Name, skill.Name)
 				}
 			}
 
@@ -462,6 +712,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					soul := config.GetSoulContent()
 
 					var contextParts []string
+					contextParts = append(contextParts, fmt.Sprintf("Active Focus Target: %s", m.activeTarget))
 
 					// Configured Targets context
 					if len(m.cfg.Targets) > 0 {
@@ -549,17 +800,67 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+		// Calculate estimated API cost (Optimization 9)
+		var cost float64
+		switch m.cfg.LLM.DefaultProvider {
+		case "gemini":
+			cost = (float64(msg.promptTokens+msg.evalTokens) / 1000.0) * 0.00015
+		case "claude":
+			cost = (float64(msg.promptTokens+msg.evalTokens) / 1000.0) * 0.003
+		case "litellm":
+			cost = (float64(msg.promptTokens+msg.evalTokens) / 1000.0) * 0.0005
+		default:
+			cost = 0.00 // Ollama local is free
+		}
+
 		m.llmStats.TotalRequests++
 		m.llmStats.LastLatency = msg.latency
 		m.llmStats.LastPromptTokens = msg.promptTokens
 		m.llmStats.LastEvalTokens = msg.evalTokens
 		m.llmStats.TotalTokens += (msg.promptTokens + msg.evalTokens)
+		m.llmStats.EstimatedCost += cost
 
-		m.history = append(m.history, llm.Message{Role: "assistant", Content: msg.content})
+		// 7. ReAct Tool Loop Handling
+		content := msg.content
+		if strings.Contains(content, "CALL_SKILL:") || strings.Contains(content, "```call:") {
+			var skillToRun string
+			if idx := strings.Index(content, "CALL_SKILL:"); idx != -1 {
+				line := content[idx+11:]
+				if endIdx := strings.Index(line, "\n"); endIdx != -1 {
+					skillToRun = strings.TrimSpace(line[:endIdx])
+				} else {
+					skillToRun = strings.TrimSpace(line)
+				}
+			} else if idx := strings.Index(content, "```call:"); idx != -1 {
+				line := content[idx+8:]
+				if endIdx := strings.Index(line, "```"); endIdx != -1 {
+					skillToRun = strings.TrimSpace(line[:endIdx])
+				}
+			}
+
+			if skillToRun != "" && m.skillMgr != nil {
+				var user, host string
+				for _, t := range m.cfg.Targets {
+					if t.Name == m.activeTarget {
+						user = t.User
+						host = t.Host
+						break
+					}
+				}
+
+				out, err := m.skillMgr.ExecuteOnTarget(context.Background(), skillToRun, user, host, nil)
+				if err == nil {
+					toolResultMsg := fmt.Sprintf("\n\n⚙️ [Autonomous ReAct Execution] Skill '%s' output:\n```\n%s\n```", skillToRun, strings.TrimSpace(out))
+					content += toolResultMsg
+				}
+			}
+		}
+
+		m.history = append(m.history, llm.Message{Role: "assistant", Content: content})
 		m.renderViewport()
 
 		if m.dbStore != nil {
-			_ = m.dbStore.SaveMessage(m.sessionID, "assistant", msg.content)
+			_ = m.dbStore.SaveMessage(m.sessionID, "assistant", content)
 		}
 
 	case string:
@@ -598,58 +899,36 @@ func (m model) View() string {
 			if preview == "" {
 				preview = "Empty chat session"
 			}
-			timeStr := sess.UpdatedAt.Format("Jan 02 15:04")
 			if i+1 == m.selectedSessIdx {
-				sb.WriteString(fmt.Sprintf("  \x1b[1;36m> 📂 Resume Session [%s] (%d msgs) — %s — %q\x1b[0m\n", sess.SessionID, sess.MessageCount, timeStr, preview))
+				sb.WriteString(fmt.Sprintf("  \x1b[1;32m> %d. %s (%s)\x1b[0m\n     Preview: %s\n\n", i+1, sess.SessionID, sess.UpdatedAt.Format("15:04"), preview))
 			} else {
-				sb.WriteString(fmt.Sprintf("    📂 Resume Session [%s] (%d msgs) — %s — %q\n", sess.SessionID, sess.MessageCount, timeStr, preview))
+				sb.WriteString(fmt.Sprintf("    %d. %s (%s)\n     Preview: %s\n\n", i+1, sess.SessionID, sess.UpdatedAt.Format("15:04"), preview))
 			}
 		}
 
-		sb.WriteString("\n───────────────────────────────────────────────────────────────\n")
-		sb.WriteString("\x1b[90m[↑/↓] Navigate  │  [Enter] Select Session  │  [Esc] Quit\x1b[0m\n")
-
-		modalStyle := lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("#5A56E0")).
-			Padding(1, 2)
-
-		w := m.width
-		h := m.height
-		if w <= 0 {
-			w = 80
-		}
-		if h <= 0 {
-			h = 24
-		}
-
-		return lipgloss.Place(
-			w, h,
-			lipgloss.Center, lipgloss.Center,
-			modalStyle.Render(sb.String()),
-		)
+		sb.WriteString("───────────────────────────────────────────────────────────────\n")
+		sb.WriteString("  Navigation: [Up/Down or Ctrl+J/K] Select  │  [Enter] Open  │  [Esc] Cancel\n")
+		return sb.String()
 	}
 
-	// Styles
 	headerStyle := lipgloss.NewStyle().
 		Bold(true).
-		Foreground(lipgloss.Color("#FAFAFA")).
-		Background(lipgloss.Color("#5A56E0")).
-		Padding(0, 1).
-		MarginBottom(1)
+		Foreground(lipgloss.Color("#FFFFFF")).
+		Background(lipgloss.Color("#1E1E2E")).
+		Padding(0, 1)
 
 	boxStyle := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("#5A56E0")).
+		BorderForeground(lipgloss.Color("#74C7EC")).
 		Padding(0, 1)
 
 	titleStyle := lipgloss.NewStyle().
 		Bold(true).
-		Foreground(lipgloss.Color("#7D56F4"))
+		Foreground(lipgloss.Color("#A6E3A1"))
 
-	// Header
-	header := headerStyle.Render(fmt.Sprintf(" MicroHarness v0.1.0 │ Session: %s │ Host: %s │ Provider: %s ",
-		m.sessionID, m.sysStats.Hostname, m.cfg.LLM.DefaultProvider))
+	// Header displaying Active Target & Provider
+	header := headerStyle.Render(fmt.Sprintf(" MicroHarness v0.2.0 │ Session: %s │ Focus: %s │ Provider: %s ",
+		m.sessionID, m.activeTarget, m.cfg.LLM.DefaultProvider))
 
 	// Left Pane (Chat Viewport & Textarea)
 	chatView := lipgloss.JoinVertical(
@@ -660,13 +939,14 @@ func (m model) View() string {
 	)
 	leftPane := boxStyle.Render(chatView)
 
-	// Right Pane (System Stats, Model Access Stats & Job History)
+	// Right Pane (System Stats, Model Telemetry HUD & Recent Jobs)
 	statsInfo := fmt.Sprintf(
-		"OS: %s/%s\nCPUs: %d | Load: %.2f\nRAM: %dMB / %dMB\nDisk Free: %d GB\n",
+		"OS: %s/%s\nCPUs: %d | Load: %.2f\nRAM: %dMB / %dMB\nDisk Free: %d GB\nFocus Target: %s\n",
 		m.sysStats.OS, m.sysStats.Arch,
 		m.sysStats.CPUCount, m.sysStats.LoadAvg1,
 		m.sysStats.MemUsedMB, m.sysStats.MemTotalMB,
 		m.sysStats.DiskFree/(1024*1024*1024),
+		m.activeTarget,
 	)
 
 	activeModel := m.cfg.LLM.Gemini.Model
@@ -679,13 +959,14 @@ func (m model) View() string {
 	}
 
 	modelStatsInfo := fmt.Sprintf(
-		"Active Model: %s\nTotal Requests: %d\nLast Latency: %v\nLast Prompt: ~%d tokens\nLast Output: ~%d tokens\nTotal Tokens: ~%d tokens\n",
+		"Active Model: %s\nTotal Requests: %d\nLast Latency: %v\nLast Prompt: ~%d tokens\nLast Output: ~%d tokens\nTotal Tokens: ~%d tokens\nEst. Cost: $%.5f\n",
 		activeModel,
 		m.llmStats.TotalRequests,
 		m.llmStats.LastLatency.Round(time.Millisecond),
 		m.llmStats.LastPromptTokens,
 		m.llmStats.LastEvalTokens,
 		m.llmStats.TotalTokens,
+		m.llmStats.EstimatedCost,
 	)
 
 	var logLines []string
@@ -700,7 +981,7 @@ func (m model) View() string {
 		lipgloss.Left,
 		titleStyle.Render("── System Monitor ──"),
 		statsInfo,
-		"\n"+titleStyle.Render("── Model Access Stats ──"),
+		"\n"+titleStyle.Render("── Model Telemetry HUD ──"),
 		modelStatsInfo,
 		"\n"+titleStyle.Render("── Recent Jobs ──"),
 		strings.Join(logLines, "\n"),
@@ -716,7 +997,7 @@ func (m model) View() string {
 	// Combine Panes horizontally
 	mainView := lipgloss.JoinHorizontal(lipgloss.Top, leftPane, rightPane)
 
-	footer := fmt.Sprintf("\n[Enter] Send Message  │  [/help] Commands  │  [Esc] Quit  │  Time: %s", time.Now().Format("15:04:05"))
+	footer := fmt.Sprintf("\n[Enter] Send  │  [! <cmd>] Shell  │  [/help] Commands  │  [Esc] Quit  │  Time: %s", time.Now().Format("15:04:05"))
 
 	return lipgloss.JoinVertical(lipgloss.Left, header, mainView, footer)
 }
