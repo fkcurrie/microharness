@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"os"
 	"os/exec"
+	"os/user"
 	"strings"
 	"sync"
 	"time"
@@ -19,9 +21,22 @@ type DiscoveredHost struct {
 	Interface       string `json:"interface"`
 }
 
+func GetDefaultSSHUser() string {
+	if u := os.Getenv("USER"); u != "" && u != "root" {
+		return u
+	}
+	if u := os.Getenv("LOGNAME"); u != "" && u != "root" {
+		return u
+	}
+	if usr, err := user.Current(); err == nil && usr.Username != "" && usr.Username != "root" {
+		return usr.Username
+	}
+	return "fcurrie"
+}
+
 func DiscoverNetworkTargets(ctx context.Context, defaultUser string) ([]DiscoveredHost, error) {
-	if defaultUser == "" {
-		defaultUser = "root"
+	if defaultUser == "" || defaultUser == "root" {
+		defaultUser = GetDefaultSSHUser()
 	}
 
 	type candidate struct {
@@ -38,7 +53,6 @@ func DiscoverNetworkTargets(ctx context.Context, defaultUser string) ([]Discover
 	ifaces, err := net.Interfaces()
 	if err == nil {
 		for _, iface := range ifaces {
-			// Skip loopback or down interfaces
 			if iface.Flags&net.FlagLoopback != 0 || iface.Flags&net.FlagUp == 0 {
 				continue
 			}
@@ -104,7 +118,7 @@ func DiscoverNetworkTargets(ctx context.Context, defaultUser string) ([]Discover
 		mu      sync.Mutex
 		results []DiscoveredHost
 		wg      sync.WaitGroup
-		sem     = make(chan struct{}, 100) // Concurrency limit
+		sem     = make(chan struct{}, 100)
 	)
 
 	for ip, devName := range candMap {
@@ -128,7 +142,7 @@ func DiscoverNetworkTargets(ctx context.Context, defaultUser string) ([]Discover
 				Interface:  dev,
 			}
 
-			// Test passwordless SSH
+			// Test passwordless SSH with defaultUser (workstation user)
 			sshCmd := exec.CommandContext(ctx, "ssh",
 				"-o", "BatchMode=yes",
 				"-o", "ConnectTimeout=2",
@@ -141,18 +155,19 @@ func DiscoverNetworkTargets(ctx context.Context, defaultUser string) ([]Discover
 				host.PasswordlessSSH = true
 				host.Hostname = strings.TrimSpace(string(out))
 			} else {
-				if currentUser := "fcurrie"; currentUser != defaultUser {
+				// Fallback test with 'root' if defaultUser was different
+				if defaultUser != "root" {
 					sshCmd2 := exec.CommandContext(ctx, "ssh",
 						"-o", "BatchMode=yes",
 						"-o", "ConnectTimeout=2",
 						"-o", "StrictHostKeyChecking=accept-new",
-						fmt.Sprintf("%s@%s", currentUser, targetIP),
+						fmt.Sprintf("root@%s", targetIP),
 						"hostname",
 					)
 					out2, err2 := sshCmd2.CombinedOutput()
 					if err2 == nil {
 						host.PasswordlessSSH = true
-						host.User = currentUser
+						host.User = "root"
 						host.Hostname = strings.TrimSpace(string(out2))
 					}
 				}
@@ -173,6 +188,11 @@ func VerifyPasswordlessSSH(ctx context.Context, user, host string) (bool, string
 		return true, "Localhost target (SSH check skipped)"
 	}
 
+	if user == "" || user == "root" {
+		// Default to workstation user if user wasn't explicitly supplied as non-root
+		user = GetDefaultSSHUser()
+	}
+
 	sshCmd := exec.CommandContext(ctx, "ssh",
 		"-o", "BatchMode=yes",
 		"-o", "ConnectTimeout=3",
@@ -184,9 +204,25 @@ func VerifyPasswordlessSSH(ctx context.Context, user, host string) (bool, string
 	if err == nil {
 		return true, fmt.Sprintf("Connected successfully to %s@%s", user, host)
 	}
+
+	// Try default workstation user if specified user failed
+	if defaultUser := GetDefaultSSHUser(); defaultUser != user {
+		sshCmd2 := exec.CommandContext(ctx, "ssh",
+			"-o", "BatchMode=yes",
+			"-o", "ConnectTimeout=3",
+			"-o", "StrictHostKeyChecking=accept-new",
+			fmt.Sprintf("%s@%s", defaultUser, host),
+			"uptime",
+		)
+		_, err2 := sshCmd2.CombinedOutput()
+		if err2 == nil {
+			return true, fmt.Sprintf("Connected successfully to %s@%s (Note: failed for %s)", defaultUser, host, user)
+		}
+	}
+
 	outStr := strings.TrimSpace(string(out))
 	if outStr == "" {
 		outStr = "Connection timed out or host unreachable"
 	}
-	return false, fmt.Sprintf("Passwordless SSH failed (%s). Run 'ssh-copy-id %s@%s' to authorize key.", outStr, user, host)
+	return false, fmt.Sprintf("Passwordless SSH check failed for %s@%s (%s).\nRun 'ssh-copy-id %s@%s' to authorize SSH key.", user, host, outStr, user, host)
 }

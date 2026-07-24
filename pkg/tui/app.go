@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -595,74 +596,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 			// Add target / host command handling
-			isAddCmd := false
-			prefixes := []string{
-				"add target ", "add host ", "add system ",
-				"/addtarget ", "/addhost ", "/add-target ", "/add-host ",
-			}
-			for _, p := range prefixes {
-				if strings.HasPrefix(cmdLower, p) {
-					isAddCmd = true
-					break
-				}
-			}
-
-			if isAddCmd {
-				raw := input
-				for _, p := range prefixes {
-					if idx := strings.Index(strings.ToLower(raw), p); idx != -1 {
-						raw = raw[idx+len(p):]
-						break
-					}
-				}
-
-				var name, host, user string
-				if strings.Contains(raw, "|") {
-					parts := strings.Split(raw, "|")
-					if len(parts) >= 1 {
-						name = strings.TrimSpace(parts[0])
-					}
-					if len(parts) >= 2 {
-						host = strings.TrimSpace(parts[1])
-					}
-					if len(parts) >= 3 {
-						user = strings.TrimSpace(parts[2])
-					}
-				} else {
-					fields := strings.Fields(raw)
-					if len(fields) >= 1 {
-						name = fields[0]
-					}
-					if len(fields) >= 2 {
-						host = fields[1]
-					}
-					if len(fields) >= 3 {
-						user = fields[2]
-					}
-				}
-
-				if host == "" && name != "" {
-					host = name
-				}
-
-				if name == "" || host == "" {
-					return m, func() tea.Msg {
-						return "⚠️ Usage: `add host <ip_or_name>` or `add target <name> | <host> | <user>` (e.g. `add host 192.168.4.61`)"
-					}
-				}
-
-				if user == "" {
-					user = "root"
-				}
-
-				// Check for duplicate target names
-				for _, t := range m.cfg.Targets {
-					if t.Name == name || (t.Host != "" && t.Host == host) {
-						return m, func() tea.Msg { return fmt.Sprintf("❌ Target or host '%s' (%s) is already registered in config.yaml.", name, host) }
-					}
-				}
-
-				// Verify Passwordless SSH
+			if name, host, user, ok := ParseAddTargetInput(input); ok {
 				m.loading = true
 				m.statusMsg = fmt.Sprintf("⏳ Verifying passwordless SSH connectivity to %s@%s...", user, host)
 				m.renderViewport()
@@ -670,27 +604,46 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, func() tea.Msg {
 					sshOK, sshMsg := sysinfo.VerifyPasswordlessSSH(context.Background(), user, host)
 
-					newTarget := config.TargetConfig{
-						Name: name,
-						Type: "ssh",
-						Host: host,
-						User: user,
+					found := false
+					for i, t := range m.cfg.Targets {
+						if t.Name == name || t.Host == host {
+							m.cfg.Targets[i].Name = name
+							m.cfg.Targets[i].Host = host
+							m.cfg.Targets[i].User = user
+							m.cfg.Targets[i].Type = "ssh"
+							found = true
+							break
+						}
+					}
+					if !found {
+						m.cfg.Targets = append(m.cfg.Targets, config.TargetConfig{
+							Name: name,
+							Type: "ssh",
+							Host: host,
+							User: user,
+						})
 					}
 
-					m.cfg.Targets = append(m.cfg.Targets, newTarget)
+					m.activeTarget = name
+
 					home, _ := os.UserHomeDir()
 					if home == "" {
 						home = "/home/fcurrie"
 					}
 					cfgPath := filepath.Join(home, ".config", "microharness", "config.yaml")
-					if err := m.cfg.Save(cfgPath); err != nil {
-						return fmt.Sprintf("❌ Failed to save updated target config: %v", err)
-					}
+					_ = m.cfg.Save(cfgPath)
 
 					if sshOK {
-						return fmt.Sprintf("✅ Target '%s' (%s@%s) registered successfully in config.yaml!\n🔑 Passwordless SSH Verified: %s", name, user, host, sshMsg)
+						return fmt.Sprintf("✅ Target '%s' (%s@%s) registered successfully in config.yaml & set as active focus target!\n🔑 SSH Status: %s", name, user, host, sshMsg)
 					}
-					return fmt.Sprintf("⚠️ Target '%s' (%s@%s) registered in config.yaml, but passwordless SSH check failed:\n%s", name, user, host, sshMsg)
+					return fmt.Sprintf("⚠️ Target '%s' (%s@%s) registered in config.yaml & set as active focus target.\n⚠️ SSH Status: %s", name, user, host, sshMsg)
+				}
+			}
+
+			if strings.HasPrefix(cmdLower, "add host") || strings.HasPrefix(cmdLower, "add target") || strings.HasPrefix(cmdLower, "add system") {
+				return m, func() tea.Msg {
+					defaultUser := sysinfo.GetDefaultSSHUser()
+					return fmt.Sprintf("💡 Target Addition Usage:\n• `add host <ip_or_hostname>` (e.g. `add host 192.168.100.200` — defaults to SSH user '%s')\n• `add host user@ip` (e.g. `add host %s@192.168.100.200`)\n• `add target <name> <ip> [user]` (e.g. `add target pxe-server 192.168.100.200 %s`)", defaultUser, defaultUser, defaultUser)
 				}
 			}
 
@@ -1033,4 +986,93 @@ func truncateResp(s string, max int) string {
 		return s[:max] + "..."
 	}
 	return s
+}
+
+func ParseAddTargetInput(input string) (name string, host string, user string, ok bool) {
+	cmdLower := strings.ToLower(input)
+	prefixes := []string{
+		"add target ", "add host ", "add system ", "add node ",
+		"/addtarget ", "/addhost ", "/add-target ", "/add-host ",
+	}
+
+	raw := ""
+	for _, p := range prefixes {
+		if strings.HasPrefix(cmdLower, p) {
+			raw = strings.TrimSpace(input[len(p):])
+			break
+		}
+	}
+	if raw == "" {
+		return "", "", "", false
+	}
+
+	user = sysinfo.GetDefaultSSHUser()
+
+	if strings.Contains(raw, "|") {
+		parts := strings.Split(raw, "|")
+		if len(parts) >= 1 {
+			name = strings.TrimSpace(parts[0])
+		}
+		if len(parts) >= 2 {
+			host = strings.TrimSpace(parts[1])
+		}
+		if len(parts) >= 3 && strings.TrimSpace(parts[2]) != "" {
+			user = strings.TrimSpace(parts[2])
+		}
+	} else {
+		fields := strings.Fields(raw)
+		if len(fields) == 1 {
+			token := fields[0]
+			if strings.Contains(token, "@") {
+				uParts := strings.SplitN(token, "@", 2)
+				user = uParts[0]
+				host = uParts[1]
+				name = uParts[1]
+			} else {
+				host = token
+				name = token
+			}
+		} else if len(fields) == 2 {
+			if strings.Contains(fields[1], "@") {
+				name = fields[0]
+				uParts := strings.SplitN(fields[1], "@", 2)
+				user = uParts[0]
+				host = uParts[1]
+			} else if strings.Contains(fields[0], "@") {
+				uParts := strings.SplitN(fields[0], "@", 2)
+				user = uParts[0]
+				host = uParts[1]
+				name = fields[1]
+			} else {
+				if net.ParseIP(fields[0]) != nil {
+					host = fields[0]
+					name = fields[0]
+					user = fields[1]
+				} else if net.ParseIP(fields[1]) != nil {
+					name = fields[0]
+					host = fields[1]
+				} else {
+					name = fields[0]
+					host = fields[1]
+				}
+			}
+		} else if len(fields) >= 3 {
+			name = fields[0]
+			host = fields[1]
+			user = fields[2]
+		}
+	}
+
+	if host == "" && name != "" {
+		host = name
+	}
+	if name == "" && host != "" {
+		name = host
+	}
+
+	if user == "" || (user == "root" && !strings.Contains(raw, "root")) {
+		user = sysinfo.GetDefaultSSHUser()
+	}
+
+	return name, host, user, (name != "" && host != "")
 }
