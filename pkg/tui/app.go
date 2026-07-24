@@ -2,11 +2,13 @@ package tui
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -197,6 +199,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.Type {
 		case tea.KeyCtrlC, tea.KeyEsc:
 			return m, tea.Quit
+
+		case tea.KeyTab:
+			curVal := m.textarea.Value()
+			newVal, hint := m.HandleTabCompletion(curVal)
+			if newVal != curVal {
+				m.textarea.SetValue(newVal)
+				m.textarea.CursorEnd()
+			}
+			if hint != "" {
+				m.statusMsg = hint
+			}
+			m.renderViewport()
+			return m, nil
 
 		case tea.KeyEnter:
 			input := strings.TrimSpace(m.textarea.Value())
@@ -575,12 +590,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						return fmt.Sprintf("❌ Skill Generator failed: %v", err)
 					}
 
-					name := "custom_gen_skill"
-					if idx := strings.Index(genPrompt, " "); idx != -1 {
-						name = strings.ReplaceAll(strings.ToLower(genPrompt[:idx]), " ", "_")
-					}
-					desc := genPrompt
-					script := "#!/usr/bin/env bash\n" + resp
+					name, desc, script := ParseGeneratedSkillResponse(genPrompt, resp)
 
 					skill, err := m.skillMgr.CreateSkill(name, desc, script)
 					if err != nil {
@@ -1131,4 +1141,147 @@ func ParseAddTargetInput(input string) (name string, host string, user string, o
 	}
 
 	return name, host, user, (name != "" && host != "")
+}
+
+func ParseGeneratedSkillResponse(genPrompt, resp string) (string, string, string) {
+	cleanResp := resp
+	if idx := strings.Index(cleanResp, "{"); idx != -1 {
+		if lastIdx := strings.LastIndex(cleanResp, "}"); lastIdx != -1 && lastIdx > idx {
+			cleanResp = cleanResp[idx : lastIdx+1]
+		}
+	}
+
+	type SkillJSON struct {
+		Name        string `json:"name"`
+		Description string `json:"description"`
+		Script      string `json:"script"`
+	}
+
+	var sj SkillJSON
+	if err := json.Unmarshal([]byte(cleanResp), &sj); err == nil && sj.Name != "" && sj.Script != "" {
+		sName := strings.ToLower(strings.TrimSpace(sj.Name))
+		sName = regexp.MustCompile(`[^a-z0-9_]+`).ReplaceAllString(sName, "_")
+		sName = strings.Trim(sName, "_")
+		if sj.Description == "" {
+			sj.Description = genPrompt
+		}
+		if !strings.HasPrefix(sj.Script, "#!") {
+			sj.Script = "#!/usr/bin/env bash\n" + sj.Script
+		}
+		return sName, sj.Description, sj.Script
+	}
+
+	words := strings.Fields(strings.ToLower(genPrompt))
+	var slugWords []string
+	stopWords := map[string]bool{"to": true, "a": true, "an": true, "the": true, "for": true, "all": true, "on": true, "in": true, "skill": true, "script": true, "generate": true}
+	for _, w := range words {
+		cleaned := regexp.MustCompile(`[^a-z0-9]`).ReplaceAllString(w, "")
+		if cleaned != "" && !stopWords[cleaned] {
+			slugWords = append(slugWords, cleaned)
+		}
+		if len(slugWords) >= 3 {
+			break
+		}
+	}
+	sName := "custom_skill"
+	if len(slugWords) > 0 {
+		sName = strings.Join(slugWords, "_")
+	}
+
+	scriptContent := resp
+	if !strings.HasPrefix(scriptContent, "#!") {
+		scriptContent = "#!/usr/bin/env bash\n" + scriptContent
+	}
+	return sName, genPrompt, scriptContent
+}
+
+func (m *model) HandleTabCompletion(input string) (string, string) {
+	if input == "" {
+		return "/", "💡 Autocomplete slash commands: /hosts, /scan, /skills, /skill generate, /run, /stats, /clear"
+	}
+
+	commands := []string{
+		"/hosts", "/targets", "/scan", "/skills", "/skill generate",
+		"/run", "/stats", "/clear", "/session", "/help", "/sh", "/add target",
+	}
+
+	var skillNames []string
+	if m.skillMgr != nil {
+		for _, s := range m.skillMgr.ListSkills() {
+			skillNames = append(skillNames, s.Name)
+		}
+	}
+
+	var targetNames []string
+	for _, t := range m.cfg.Targets {
+		if t.Name != "" {
+			targetNames = append(targetNames, t.Name)
+		}
+		if t.Host != "" && t.Host != t.Name {
+			targetNames = append(targetNames, t.Host)
+		}
+	}
+
+	// 1. Completion for target after " on "
+	if strings.Contains(input, " on ") {
+		idx := strings.LastIndex(input, " on ")
+		prefix := input[:idx+4]
+		targetPrefix := strings.TrimSpace(input[idx+4:])
+
+		var matches []string
+		for _, t := range targetNames {
+			if strings.HasPrefix(strings.ToLower(t), strings.ToLower(targetPrefix)) {
+				matches = append(matches, t)
+			}
+		}
+		if len(matches) == 1 {
+			return prefix + matches[0], "✅ Autocompleted target: " + matches[0]
+		} else if len(matches) > 1 {
+			return input, "💡 Target matches: " + strings.Join(matches, " | ")
+		}
+		return input, "💡 No matching target found"
+	}
+
+	// 2. Completion for skill name after "/run " or "run skill "
+	if strings.HasPrefix(input, "/run ") || strings.HasPrefix(input, "run skill ") {
+		cmdPrefix := "/run "
+		if strings.HasPrefix(input, "run skill ") {
+			cmdPrefix = "run skill "
+		}
+		skillPrefix := strings.TrimPrefix(input, cmdPrefix)
+
+		var matches []string
+		for _, s := range skillNames {
+			if strings.HasPrefix(strings.ToLower(s), strings.ToLower(skillPrefix)) {
+				matches = append(matches, s)
+			}
+		}
+		if len(matches) == 1 {
+			return cmdPrefix + matches[0] + " ", "✅ Autocompleted skill: " + matches[0]
+		} else if len(matches) > 1 {
+			return input, "💡 Skill matches: " + strings.Join(matches, " | ")
+		}
+		return input, "💡 No matching skill found"
+	}
+
+	// 3. Command prefix completion
+	if strings.HasPrefix(input, "/") || strings.HasPrefix(input, "add ") || strings.HasPrefix(input, "run ") || strings.HasPrefix(input, "generate ") {
+		var matches []string
+		for _, c := range commands {
+			if strings.HasPrefix(strings.ToLower(c), strings.ToLower(input)) {
+				matches = append(matches, c)
+			}
+		}
+		if len(matches) == 1 {
+			addSpace := " "
+			if matches[0] == "/hosts" || matches[0] == "/targets" || matches[0] == "/scan" || matches[0] == "/skills" || matches[0] == "/stats" || matches[0] == "/clear" || matches[0] == "/help" {
+				addSpace = ""
+			}
+			return matches[0] + addSpace, "✅ Autocompleted command: " + matches[0]
+		} else if len(matches) > 1 {
+			return input, "💡 Command matches: " + strings.Join(matches, " | ")
+		}
+	}
+
+	return input, ""
 }
