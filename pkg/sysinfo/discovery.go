@@ -2,11 +2,14 @@ package sysinfo
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"net"
 	"os"
 	"os/exec"
 	"os/user"
+	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -34,20 +37,40 @@ func GetDefaultSSHUser() string {
 	return "fcurrie"
 }
 
+func generateSubnetIPs(ipNet *net.IPNet, maxCandidates int) []string {
+	var ips []string
+	ip := ipNet.IP.To4()
+	if ip == nil {
+		return ips
+	}
+
+	mask := ipNet.Mask
+	start := binary.BigEndian.Uint32(ip) & binary.BigEndian.Uint32(mask)
+	end := start | ^binary.BigEndian.Uint32(mask)
+
+	count := 0
+	for current := start + 1; current < end; current++ {
+		candidateIP := make(net.IP, 4)
+		binary.BigEndian.PutUint32(candidateIP, current)
+		ips = append(ips, candidateIP.String())
+		count++
+		if count >= maxCandidates {
+			break
+		}
+	}
+	return ips
+}
+
 func DiscoverNetworkTargets(ctx context.Context, defaultUser string) ([]DiscoveredHost, error) {
 	if defaultUser == "" || defaultUser == "root" {
 		defaultUser = GetDefaultSSHUser()
 	}
 
-	type candidate struct {
-		ip    string
-		iface string
-	}
+	candMap := make(map[string]string) // ip -> interface/source
 
-	candMap := make(map[string]string) // ip -> interface
-
-	// Candidate IP: Known PXE server
+	// Priority candidates: Known PXE server and active subnet targets
 	candMap["192.168.100.200"] = "pxe-net"
+	candMap["192.168.4.61"] = "known-target"
 
 	// 1. Inspect ALL system network interfaces (WiFi, Ethernet, Bridges)
 	ifaces, err := net.Interfaces()
@@ -61,7 +84,6 @@ func DiscoverNetworkTargets(ctx context.Context, defaultUser string) ([]Discover
 			if strings.HasPrefix(iface.Name, "wl") || strings.Contains(iface.Name, "wifi") || strings.Contains(iface.Name, "wlan") {
 				ifaceType = "WiFi"
 			}
-
 			ifaceLabel := fmt.Sprintf("%s (%s)", iface.Name, ifaceType)
 
 			addrs, err := iface.Addrs()
@@ -75,17 +97,11 @@ func DiscoverNetworkTargets(ctx context.Context, defaultUser string) ([]Discover
 					continue
 				}
 
-				// Generate host candidate IPs for subnets <= /24
-				ones, bits := ipNet.Mask.Size()
-				if ones >= 24 && bits == 32 {
-					baseIP := ipNet.IP.To4()
-					for i := 1; i <= 254; i++ {
-						ip := net.IPv4(baseIP[0], baseIP[1], baseIP[2], byte(i)).String()
-						if ip != baseIP.String() {
-							if _, exists := candMap[ip]; !exists {
-								candMap[ip] = ifaceLabel
-							}
-						}
+				// Generate all subnet IPs (supports /16 to /28, e.g. /22 = 1022 hosts)
+				subnetIPs := generateSubnetIPs(ipNet, 1024)
+				for _, targetIP := range subnetIPs {
+					if _, exists := candMap[targetIP]; !exists {
+						candMap[targetIP] = ifaceLabel
 					}
 				}
 			}
@@ -93,18 +109,17 @@ func DiscoverNetworkTargets(ctx context.Context, defaultUser string) ([]Discover
 	}
 
 	// 2. Parse ARP / ip neighbor table across all interfaces
-	out, err := exec.CommandContext(ctx, "ip", "neighbor").CombinedOutput()
-	if err == nil {
+	if out, err := exec.CommandContext(ctx, "ip", "neighbor").CombinedOutput(); err == nil {
 		lines := strings.Split(string(out), "\n")
 		for _, line := range lines {
 			fields := strings.Fields(line)
 			if len(fields) >= 3 {
 				ip := fields[0]
 				if net.ParseIP(ip) != nil && !strings.HasPrefix(ip, "127.") {
-					dev := "lan"
+					dev := "arp-neighbor"
 					for i, f := range fields {
 						if f == "dev" && i+1 < len(fields) {
-							dev = fields[i+1]
+							dev = fmt.Sprintf("arp (%s)", fields[i+1])
 						}
 					}
 					candMap[ip] = dev
@@ -113,12 +128,68 @@ func DiscoverNetworkTargets(ctx context.Context, defaultUser string) ([]Discover
 		}
 	}
 
-	// 3. Concurrently dial port 22 across all gathered candidates
+	// 3. Parse Default Gateways from ip route
+	if out, err := exec.CommandContext(ctx, "ip", "route").CombinedOutput(); err == nil {
+		lines := strings.Split(string(out), "\n")
+		for _, line := range lines {
+			fields := strings.Fields(line)
+			for i, f := range fields {
+				if f == "via" && i+1 < len(fields) {
+					gwIP := fields[i+1]
+					if net.ParseIP(gwIP) != nil && !strings.HasPrefix(gwIP, "127.") {
+						candMap[gwIP] = "default-gateway"
+					}
+				}
+			}
+		}
+	}
+
+	// 4. Parse ~/.ssh/known_hosts for previously visited remote hosts
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		khPath := filepath.Join(home, ".ssh", "known_hosts")
+		if data, err := os.ReadFile(khPath); err == nil {
+			lines := strings.Split(string(data), "\n")
+			for _, line := range lines {
+				line = strings.TrimSpace(line)
+				if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "|") {
+					continue
+				}
+				fields := strings.Fields(line)
+				if len(fields) > 0 {
+					hostToken := fields[0]
+					hostToken = strings.Split(hostToken, ",")[0]
+					hostToken = strings.TrimPrefix(hostToken, "[")
+					hostToken = strings.Split(hostToken, "]")[0]
+					if net.ParseIP(hostToken) != nil && !strings.HasPrefix(hostToken, "127.") {
+						if _, exists := candMap[hostToken]; !exists {
+							candMap[hostToken] = "ssh-known-hosts"
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// 5. Parse mDNS / Avahi SSH Services
+	if out, err := exec.CommandContext(ctx, "avahi-browse", "-rt", "-p", "_ssh._tcp").CombinedOutput(); err == nil {
+		lines := strings.Split(string(out), "\n")
+		for _, line := range lines {
+			fields := strings.Split(line, ";")
+			if len(fields) >= 8 {
+				targetIP := fields[7]
+				if net.ParseIP(targetIP) != nil && !strings.HasPrefix(targetIP, "127.") {
+					candMap[targetIP] = "mDNS-avahi"
+				}
+			}
+		}
+	}
+
+	// 6. Concurrently scan port 22 across all gathered candidates (300ms dial timeout, 200 workers)
 	var (
 		mu      sync.Mutex
 		results []DiscoveredHost
 		wg      sync.WaitGroup
-		sem     = make(chan struct{}, 100)
+		sem     = make(chan struct{}, 200)
 	)
 
 	for ip, devName := range candMap {
@@ -128,7 +199,7 @@ func DiscoverNetworkTargets(ctx context.Context, defaultUser string) ([]Discover
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
-			dialer := net.Dialer{Timeout: 500 * time.Millisecond}
+			dialer := net.Dialer{Timeout: 300 * time.Millisecond}
 			conn, err := dialer.DialContext(ctx, "tcp", fmt.Sprintf("%s:22", targetIP))
 			if err != nil {
 				return
@@ -142,7 +213,7 @@ func DiscoverNetworkTargets(ctx context.Context, defaultUser string) ([]Discover
 				Interface:  dev,
 			}
 
-			// Test passwordless SSH with defaultUser (workstation user)
+			// Test passwordless SSH with defaultUser (workstation user e.g. fcurrie)
 			sshCmd := exec.CommandContext(ctx, "ssh",
 				"-o", "BatchMode=yes",
 				"-o", "ConnectTimeout=2",
@@ -164,8 +235,7 @@ func DiscoverNetworkTargets(ctx context.Context, defaultUser string) ([]Discover
 						fmt.Sprintf("root@%s", targetIP),
 						"hostname",
 					)
-					out2, err2 := sshCmd2.CombinedOutput()
-					if err2 == nil {
+					if out2, err2 := sshCmd2.CombinedOutput(); err2 == nil {
 						host.PasswordlessSSH = true
 						host.User = "root"
 						host.Hostname = strings.TrimSpace(string(out2))
@@ -180,6 +250,12 @@ func DiscoverNetworkTargets(ctx context.Context, defaultUser string) ([]Discover
 	}
 
 	wg.Wait()
+
+	// Sort results by IP for clean output
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].IP < results[j].IP
+	})
+
 	return results, nil
 }
 
@@ -189,7 +265,6 @@ func VerifyPasswordlessSSH(ctx context.Context, user, host string) (bool, string
 	}
 
 	if user == "" || user == "root" {
-		// Default to workstation user if user wasn't explicitly supplied as non-root
 		user = GetDefaultSSHUser()
 	}
 
